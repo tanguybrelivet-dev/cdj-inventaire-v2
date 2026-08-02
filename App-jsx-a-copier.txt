@@ -1,0 +1,4160 @@
+import { useState, useMemo, useRef, useEffect } from "react";
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  ImageRun,
+  AlignmentType,
+  HeadingLevel,
+  ShadingType,
+  VerticalAlign,
+  PageBreak,
+} from "docx";
+import { saveDossier, listDossiers, loadDossier } from "./dossiers.js";
+import { isVideoWatermarkSupported, watermarkVideo, uploadVideo, uploadAudio } from "./videoUtils.js";
+import { qrDataUrl } from "./qr.js";
+import { supabaseConfigured } from "./supabaseClient.js";
+import {
+  Camera,
+  Plus,
+  Trash2,
+  Stamp,
+  MapPin,
+  Clock,
+  X,
+  Check,
+  Pencil,
+  Settings2,
+  ImageOff,
+  FilePlus2,
+  Building2,
+  Gavel,
+  ChevronRight,
+  Search,
+  Sparkles,
+  FileDown,
+  Mic,
+  ClipboardList,
+  TrafficCone,
+  Home,
+  Lock,
+  ArrowLeft,
+  FileQuestion,
+  Cloud,
+  LayoutDashboard,
+  Video,
+  Square,
+  QrCode,
+} from "lucide-react";
+
+// ---------------------------------------------------------------------------
+// Design tokens — navy + huissier orange, pulled from the real letterhead
+// ---------------------------------------------------------------------------
+const INK = "#1A1A18";
+const NAVY = "#1F3864";
+const RUST = "#D9622C";
+const PAPER = "#F6F3EC";
+const PAPER_DEEP = "#EDE8DB";
+const LINE = "#DCD5C4";
+const MUTED = "#8A8371";
+
+const SEED_CATEGORIES = [
+  { key: "materiel", label: "Matériel d'exploitation" },
+  { key: "location", label: "Location" },
+  { key: "incorporel", label: "Biens incorporels" },
+];
+
+const SEED_ZONES = ["SALLE DE BAR", "CUISINE", "PLONGE", "RESERVE", "EXTERIEUR"];
+
+const SEED_LOTS = [
+  { id: 1, zone: "SALLE DE BAR", cat: "incorporel", desig: "UNE LICENCE IV", value: 8000, photos: ["seed"] },
+  { id: 2, zone: "SALLE DE BAR", cat: "location", desig: "UNE BOX APPARTENANT A CANAL PLUS", value: null, photos: [] },
+  { id: 3, zone: "CUISINE", cat: "materiel", desig: "FOUR A CONVECTION AT211-MDI", value: 200, photos: ["seed", "seed"] },
+];
+
+// ---------------------------------------------------------------------------
+// Menu: choix du type de constat
+// ---------------------------------------------------------------------------
+const ACT_TYPES = [
+  {
+    key: "inventaire_lj",
+    label: "Inventaire (liquidation judiciaire)",
+    desc: "Inventaire prisatif de l'actif mobilier et incorporel",
+    icon: ClipboardList,
+    available: true,
+  },
+  {
+    key: "affichage",
+    label: "Constat d'affichage",
+    desc: "Constat de présence ou d'absence d'un affichage",
+    icon: Camera,
+    available: true,
+  },
+  {
+    key: "voirie",
+    label: "Constat de voirie",
+    desc: "État de la voie publique, dégradations, stationnement",
+    icon: TrafficCone,
+    available: true,
+  },
+  {
+    key: "etat_lieux",
+    label: "État des lieux",
+    desc: "Entrée, sortie ou état descriptif d'un local",
+    icon: Home,
+    available: false,
+  },
+  {
+    key: "autre",
+    label: "Autre constat",
+    desc: "Tout autre type de constat non répertorié",
+    icon: FileQuestion,
+    available: false,
+  },
+];
+
+function MenuScreen({ onSelect, onOpenDashboard }) {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 px-5 pb-5 pt-6" style={{ background: NAVY, color: PAPER }}>
+        <div className="flex h-11 w-11 items-center justify-center rounded-full" style={{ background: RUST }}>
+          <Stamp size={20} color={PAPER} strokeWidth={2} />
+        </div>
+        <h1 className="mt-3 text-[19px] font-semibold leading-tight">Nouveau constat</h1>
+        <p className="mt-1 text-[12px]" style={{ color: "#C3CEDE" }}>
+          Choisissez le type d'acte à établir
+        </p>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 py-4">
+        {ACT_TYPES.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => t.available && onSelect(t.key)}
+              disabled={!t.available}
+              className="mb-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition-colors disabled:opacity-45"
+              style={{ borderColor: t.available ? LINE : LINE, background: "white" }}
+            >
+              <div
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full"
+                style={{ background: t.available ? "rgba(217,98,44,0.1)" : PAPER_DEEP, color: t.available ? RUST : MUTED }}
+              >
+                <Icon size={19} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13.5px] font-semibold" style={{ color: INK }}>{t.label}</p>
+                <p className="truncate text-[11px]" style={{ color: MUTED }}>{t.desc}</p>
+              </div>
+              {t.available ? (
+                <ChevronRight size={18} style={{ color: MUTED }} />
+              ) : (
+                <span
+                  className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 font-mono text-[9px] font-semibold uppercase tracking-wide"
+                  style={{ background: PAPER_DEEP, color: MUTED }}
+                >
+                  <Lock size={9} />
+                  Bientôt
+                </span>
+              )}
+            </button>
+          );
+        })}
+        <p className="mt-2 px-1 text-[11px]" style={{ color: MUTED }}>
+          Les autres types de constat arrivent prochainement — dites-nous lesquels prioriser.
+        </p>
+        <button
+          type="button"
+          onClick={onOpenDashboard}
+          className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-3 text-[13px] font-semibold"
+          style={{ borderColor: NAVY, color: NAVY }}
+        >
+          <LayoutDashboard size={16} />
+          Tableau de bord des dossiers
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tableau de bord — liste des dossiers enregistrés dans le cloud (Supabase)
+// ---------------------------------------------------------------------------
+function Dashboard({ onOpenDossier, onBack, embedded }) {
+  const [dossiers, setDossiers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filterType, setFilterType] = useState("all");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const { data, error } = await listDossiers();
+      if (!cancelled) {
+        if (error) setError(error.message);
+        setDossiers(data);
+        setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const typeInfo = (key) => ACT_TYPES.find((t) => t.key === key) || ACT_TYPES[0];
+  const filtered = filterType === "all" ? dossiers : dossiers.filter((d) => (d.type || "inventaire_lj") === filterType);
+  const presentTypes = ACT_TYPES.filter((t) => dossiers.some((d) => (d.type || "inventaire_lj") === t.key));
+
+  return (
+    <div className="flex h-full flex-col" style={{ background: PAPER }}>
+      <div className="shrink-0 px-5 pb-5 pt-6" style={{ background: NAVY, color: PAPER }}>
+        {!embedded && (
+          <button onClick={onBack} className="mb-2 flex items-center gap-1 text-[11px] font-semibold" style={{ color: "#C3CEDE" }}>
+            <ArrowLeft size={13} />
+            Retour
+          </button>
+        )}
+        <div className="flex items-center gap-2">
+          <LayoutDashboard size={20} />
+          <h1 className="text-[19px] font-semibold leading-tight">Tableau de bord</h1>
+        </div>
+        <p className="mt-1 text-[12px]" style={{ color: "#C3CEDE" }}>
+          {filtered.length} constat{filtered.length > 1 ? "s" : ""} enregistré{filtered.length > 1 ? "s" : ""}
+        </p>
+      </div>
+
+      {presentTypes.length > 1 && (
+        <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-5 py-3 scrollbar-none" style={{ borderColor: LINE, background: PAPER_DEEP }}>
+          <button
+            onClick={() => setFilterType("all")}
+            className="shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-semibold"
+            style={{ borderColor: filterType === "all" ? NAVY : LINE, background: filterType === "all" ? NAVY : "white", color: filterType === "all" ? PAPER : MUTED }}
+          >
+            Tous
+          </button>
+          {presentTypes.map((t) => {
+            const active = filterType === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setFilterType(t.key)}
+                className="shrink-0 whitespace-nowrap rounded-full border px-3 py-1.5 text-[11px] font-semibold"
+                style={{ borderColor: active ? NAVY : LINE, background: active ? NAVY : "white", color: active ? PAPER : MUTED }}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto px-5 py-4">
+        {!supabaseConfigured && (
+          <div className="rounded-2xl border px-4 py-3.5" style={{ borderColor: LINE, background: "white" }}>
+            <p className="text-[13px]" style={{ color: INK }}>
+              Supabase n'est pas encore configuré. Complétez <code>src/supabaseClient.js</code> avec l'URL et la
+              clé de votre projet pour activer le tableau de bord (voir README.md).
+            </p>
+          </div>
+        )}
+        {supabaseConfigured && loading && (
+          <p className="text-center text-[13px]" style={{ color: MUTED }}>Chargement…</p>
+        )}
+        {supabaseConfigured && error && (
+          <p className="rounded-xl px-3 py-2 text-[12px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{error}</p>
+        )}
+        {supabaseConfigured && !loading && !error && filtered.length === 0 && (
+          <p className="text-center text-[13px]" style={{ color: MUTED }}>
+            Aucun constat enregistré pour l'instant.
+          </p>
+        )}
+        {filtered.map((d) => {
+          const t = typeInfo(d.type || "inventaire_lj");
+          const Icon = t.icon;
+          return (
+            <button
+              key={d.id}
+              onClick={() => onOpenDossier(d.id)}
+              className="mb-3 flex w-full items-center gap-3 rounded-2xl border px-4 py-3.5 text-left"
+              style={{ borderColor: LINE, background: "white" }}
+            >
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full" style={{ background: "rgba(31,56,100,0.08)", color: NAVY }}>
+                <Icon size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[13.5px] font-semibold" style={{ color: INK }}>{d.name}</p>
+              <p className="truncate text-[11px]" style={{ color: MUTED }}>{d.address}</p>
+              <p className="mt-0.5 text-[10.5px]" style={{ color: MUTED }}>
+                {d.lot_count} lot{d.lot_count > 1 ? "s" : ""} · {euros(d.total)} · maj {new Date(d.updated_at).toLocaleDateString("fr-FR")}
+              </p>
+            </div>
+            <ChevronRight size={18} style={{ color: MUTED }} />
+          </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const SEED_REQUERANTS = [
+  {
+    id: "r1",
+    denomination: "SELARL EP & ASSOCIÉS",
+    capital: "200 000",
+    rcsVille: "BREST",
+    rcsNumero: "808 072 821",
+    adresse: "62A Quai de l'Odet, 29000 Quimper",
+    nom: "Jordi PAGANI",
+    qualite: "Gérant",
+  },
+];
+
+const emptyRequerant = {
+  denomination: "",
+  capital: "",
+  rcsVille: "",
+  rcsNumero: "",
+  adresse: "",
+  nom: "",
+  qualite: "Gérant",
+};
+
+// ---------------------------------------------------------------------------
+// Simulated Pappers lookup — in production this calls api.pappers.fr/v2/recherche
+// through a backend relay (the API key must never ship inside the mobile app).
+// ---------------------------------------------------------------------------
+const MOCK_PAPPERS = [
+  {
+    denomination: "SELARL EP & ASSOCIÉS",
+    capital: "200 000",
+    rcsVille: "BREST",
+    rcsNumero: "808 072 821",
+    adresse: "62A Quai de l'Odet, 29000 Quimper",
+    nom: "Jordi PAGANI",
+    qualite: "Gérant",
+  },
+  {
+    denomination: "SELARL AVEIRO & PARTENAIRES",
+    capital: "150 000",
+    rcsVille: "RENNES",
+    rcsNumero: "512 344 998",
+    adresse: "4 Rue de la Monnaie, 35000 Rennes",
+    nom: "Camille AVEIRO",
+    qualite: "Gérante",
+  },
+  {
+    denomination: "SCP LERAY MANDATAIRES JUDICIAIRES",
+    capital: "80 000",
+    rcsVille: "NANTES",
+    rcsNumero: "398 221 764",
+    adresse: "12 Cours des Cinquante Otages, 44000 Nantes",
+    nom: "Thibault LERAY",
+    qualite: "Associé gérant",
+  },
+  {
+    denomination: "SELARL BODIN JUDICIAIRE",
+    capital: "100 000",
+    rcsVille: "QUIMPER",
+    rcsNumero: "441 087 320",
+    adresse: "9 Place Saint-Corentin, 29000 Quimper",
+    nom: "Anne BODIN",
+    qualite: "Gérante",
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Simulated SIREN lookup for the défendeur — in production this calls the
+// INSEE Sirene API (api.insee.fr/entreprises/sirene), the official free
+// registry for SIREN lookups, through the same backend relay used for
+// the requérant search above (no API key needed for Sirene, but a relay
+// avoids CORS issues and lets you add caching).
+// ---------------------------------------------------------------------------
+const MOCK_SIREN = {
+  "979626306": {
+    formeJuridique: "SARL",
+    denomination: "IZOA",
+    capital: "1 000",
+    rcsVille: "Quimper",
+    rcsNumero: "979 626 306",
+    adresseSiege: "108 Avenue de la Gare, 29900 Concarneau",
+    representant: "Emmelyne GOBIN",
+    qualiteRepresentant: "Gérante",
+  },
+  "441087320": {
+    formeJuridique: "SARL",
+    denomination: "PASTRY JUSTREG",
+    capital: "5 000",
+    rcsVille: "Quimper",
+    rcsNumero: "441 087 320",
+    adresseSiege: "104 Avenue de la Gare, 29900 Concarneau",
+    representant: "Justine REGNAULT",
+    qualiteRepresentant: "Gérante",
+  },
+};
+
+function SirenLookup({ onFound }) {
+  const [siren, setSiren] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | loading | found | notfound
+
+  function digitsOnly(v) {
+    return v.replace(/\D/g, "").slice(0, 9);
+  }
+
+  function lookup(value) {
+    const clean = digitsOnly(value);
+    setSiren(clean);
+    if (clean.length !== 9) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("loading");
+    window.setTimeout(() => {
+      const match = MOCK_SIREN[clean];
+      if (match) {
+        onFound(match);
+        setStatus("found");
+      } else {
+        setStatus("notfound");
+      }
+    }, 400);
+  }
+
+  return (
+    <div className="mb-4">
+      <label className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+        N&deg; SIREN (optionnel, remplit le reste automatiquement)
+        <span className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5" style={{ background: "rgba(31,56,100,0.1)", color: NAVY }}>
+          <Sparkles size={9} />
+          <span className="text-[8.5px] normal-case tracking-normal">via Sirene (INSEE)</span>
+        </span>
+      </label>
+      <div className="relative">
+        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: MUTED }} />
+        <input
+          value={formatGrouped3(siren)}
+          onChange={(e) => lookup(e.target.value)}
+          inputMode="numeric"
+          placeholder="ex. 979 626 306"
+          maxLength={11}
+          className="w-full rounded-xl border py-2.5 pl-9 pr-3.5 font-mono text-[14px] tracking-wide outline-none"
+          style={{
+            borderColor: status === "found" ? "#2D6A4F" : status === "notfound" ? "#B5301B" : LINE,
+            background: "white",
+            color: INK,
+          }}
+        />
+      </div>
+      {status === "loading" && (
+        <p className="mt-1 text-[11px]" style={{ color: MUTED }}>Recherche en cours…</p>
+      )}
+      {status === "found" && (
+        <p className="mt-1 text-[11px]" style={{ color: "#2D6A4F" }}>Entreprise trouvée — champs remplis automatiquement, à vérifier.</p>
+      )}
+      {status === "notfound" && (
+        <p className="mt-1 text-[11px]" style={{ color: "#B5301B" }}>Aucune entreprise trouvée pour ce SIREN — saisissez les informations manuellement.</p>
+      )}
+    </div>
+  );
+}
+
+function PappersAutocomplete({ value, onChange, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const results =
+    value.trim().length >= 2
+      ? MOCK_PAPPERS.filter((c) => c.denomination.toLowerCase().includes(value.trim().toLowerCase()))
+      : [];
+
+  return (
+    <div className="relative mb-4">
+      <label className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+        Dénomination (ex. SELARL...)
+        <span className="flex items-center gap-0.5 rounded-full px-1.5 py-0.5" style={{ background: "rgba(217,98,44,0.12)", color: RUST }}>
+          <Sparkles size={9} />
+          <span className="text-[8.5px] normal-case tracking-normal">via Pappers</span>
+        </span>
+      </label>
+      <div className="relative">
+        <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" style={{ color: MUTED }} />
+        <input
+          value={value}
+          onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          placeholder="Commencez à taper le nom de l'étude..."
+          className="w-full rounded-xl border py-2.5 pl-9 pr-3.5 text-[14px] outline-none"
+          style={{ borderColor: LINE, background: "white", color: INK }}
+        />
+      </div>
+      {open && results.length > 0 && (
+        <div
+          className="absolute inset-x-0 top-full z-10 mt-1.5 max-h-56 overflow-y-auto rounded-xl border shadow-lg"
+          style={{ borderColor: LINE, background: "white" }}
+        >
+          {results.map((r) => (
+            <button
+              key={r.denomination}
+              type="button"
+              onClick={() => { onSelect(r); setOpen(false); }}
+              className="flex w-full flex-col items-start border-b px-3.5 py-2.5 text-left last:border-0"
+              style={{ borderColor: LINE }}
+            >
+              <span className="text-[13px] font-semibold" style={{ color: INK }}>{r.denomination}</span>
+              <span className="text-[11px]" style={{ color: MUTED }}>
+                RCS {r.rcsVille} {r.rcsNumero} · {r.adresse}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && value.trim().length >= 2 && results.length === 0 && (
+        <div className="absolute inset-x-0 top-full z-10 mt-1.5 rounded-xl border px-3.5 py-2.5 shadow-lg" style={{ borderColor: LINE, background: "white" }}>
+          <span className="text-[12px]" style={{ color: MUTED }}>Aucun résultat — saisissez les informations manuellement.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const emptyCaseDraft = {
+  formeJuridique: "SARL",
+  denomination: "",
+  capital: "",
+  rcsVille: "",
+  rcsNumero: "",
+  adresseSiege: "",
+  representant: "",
+  qualiteRepresentant: "Gérant(e)",
+  tribunal: "",
+  dateJugement: "",
+  adresseLieu: "",
+  dateInventaire: "",
+  heureDebut: "",
+};
+
+function formatGrouped3(v) {
+  // Groups digits by 3 with spaces (e.g. "979626306" -> "979 626 306"),
+  // keeping non-digit separators the user already typed out of the way.
+  const digits = v.replace(/\D/g, "");
+  return digits.replace(/(\d{3})(?=\d)/g, "$1 ");
+}
+
+async function sha256Hex(blob) {
+  try {
+    const buf = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+  } catch {
+    return null;
+  }
+}
+
+function watermarkImage(file) {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+
+      const scale = img.width / 1000;
+      const fontSize = Math.max(14, 22 * scale);
+      const pad = Math.max(8, 14 * scale);
+      const label = "© SCP BRELIVET Tanguy";
+
+      ctx.font = `bold ${fontSize}px Arial, sans-serif`;
+      const textWidth = ctx.measureText(label).width;
+      const barHeight = fontSize + pad * 1.2;
+      ctx.fillStyle = "rgba(20,18,16,0.55)";
+      ctx.fillRect(0, img.height - barHeight, textWidth + pad * 2, barHeight);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, pad, img.height - barHeight / 2);
+
+      const r = Math.max(16, 26 * scale);
+      const cx = img.width - r - pad;
+      const cy = img.height - r - pad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#D9622C";
+      ctx.fill();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = `bold ${r * 0.8}px Arial, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText("HJ", cx, cy);
+      ctx.textAlign = "left";
+
+      canvas.toBlob(
+        (blob) => {
+          URL.revokeObjectURL(objectUrl);
+          resolve(URL.createObjectURL(blob));
+        },
+        "image/jpeg",
+        0.9
+      );
+    };
+    img.src = objectUrl;
+  });
+}
+
+function euros(n) {
+  if (n === null || n === undefined) return "Mémoire";
+  return n.toLocaleString("fr-FR") + " €";
+}
+
+function eurosCost(n) {
+  return n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+}
+
+const FR_UNITS = ["", "un", "deux", "trois", "quatre", "cinq", "six", "sept", "huit", "neuf", "dix", "onze", "douze", "treize", "quatorze", "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf"];
+const FR_TENS = ["", "", "vingt", "trente", "quarante", "cinquante", "soixante", "soixante-dix", "quatre-vingt", "quatre-vingt-dix"];
+
+function frHundreds(num) {
+  let str = "";
+  if (num >= 100) {
+    const h = Math.floor(num / 100);
+    str += (h > 1 ? FR_UNITS[h] + " " : "") + "cent" + (h > 1 && num % 100 === 0 ? "s" : "") + " ";
+    num %= 100;
+  }
+  if (num >= 20) {
+    const t = Math.floor(num / 10);
+    const u = num % 10;
+    if (t === 7 || t === 9) {
+      str += FR_TENS[t - 1] + "-" + FR_UNITS[10 + u] + " ";
+    } else {
+      str += FR_TENS[t] + (u === 1 && t !== 8 ? "-et-un" : u > 0 ? "-" + FR_UNITS[u] : t === 8 ? "s" : "") + " ";
+    }
+  } else if (num > 0) {
+    str += FR_UNITS[num] + " ";
+  }
+  return str.trim();
+}
+
+function frNumber(num) {
+  if (num === 0) return "zéro";
+  let str = "";
+  const millions = Math.floor(num / 1000000);
+  const thousands = Math.floor((num % 1000000) / 1000);
+  const rest = num % 1000;
+  if (millions > 0) str += (millions > 1 ? frHundreds(millions) + " millions " : "un million ");
+  if (thousands > 0) str += (thousands > 1 ? frHundreds(thousands) + " mille " : "mille ");
+  if (rest > 0) str += frHundreds(rest);
+  return str.trim();
+}
+
+function montantEnLettres(amount) {
+  const euros = Math.floor(amount);
+  const centimes = Math.round((amount - euros) * 100);
+  let str = frNumber(euros).toUpperCase() + (euros > 1 ? " EUROS" : " EURO");
+  if (centimes > 0) {
+    str += " ET " + frNumber(centimes).toUpperCase() + (centimes > 1 ? " CENTIMES" : " CENTIME");
+  }
+  return str;
+}
+
+function StampBurst({ show }) {
+  if (!show) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center">
+      <div
+        className="flex h-24 w-24 rotate-[-12deg] items-center justify-center rounded-full border-[3px] text-center font-mono text-[11px] font-bold uppercase tracking-wide"
+        style={{ borderColor: RUST, color: RUST, animation: "stampIn 480ms cubic-bezier(.2,1.4,.4,1) forwards" }}
+      >
+        Lot
+        <br />
+        constaté
+      </div>
+    </div>
+  );
+}
+
+function Sheet({ open, onClose, title, eyebrow, children, footer, z = 30 }) {
+  return (
+    <>
+      <div
+        className={`absolute inset-x-0 bottom-0 flex flex-col rounded-t-[2rem] border-t shadow-[0_-8px_30px_rgba(0,0,0,0.18)] transition-transform duration-300 ease-out ${
+          open ? "translate-y-0" : "translate-y-full"
+        }`}
+        style={{ background: PAPER, borderColor: LINE, height: "88%", zIndex: z }}
+      >
+        <div className="flex shrink-0 items-center justify-between border-b px-5 py-4" style={{ borderColor: LINE }}>
+          <div>
+            {eyebrow && (
+              <p className="font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                {eyebrow}
+              </p>
+            )}
+            <h3 className="text-[16px] font-semibold" style={{ color: INK }}>{title}</h3>
+          </div>
+          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-full" style={{ background: PAPER_DEEP, color: INK }} aria-label="Fermer">
+            <X size={16} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        {footer && <div className="shrink-0 border-t px-5 py-4" style={{ borderColor: LINE }}>{footer}</div>}
+      </div>
+      {open && (
+        <button aria-label="Fermer" onClick={onClose} className="absolute inset-0" style={{ background: "rgba(20,18,16,0.35)", zIndex: z - 1 }} />
+      )}
+    </>
+  );
+}
+
+function Field({ label, ...props }) {
+  return (
+    <div className="mb-4">
+      <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+        {label}
+      </label>
+      <input
+        {...props}
+        className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+        style={{ borderColor: LINE, background: "white", color: INK }}
+      />
+    </div>
+  );
+}
+
+function SectionCard({ icon: Icon, title, children }) {
+  return (
+    <div className="mb-4 rounded-2xl border p-4" style={{ borderColor: LINE, background: "white" }}>
+      <div className="mb-3 flex items-center gap-2">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full" style={{ background: PAPER_DEEP, color: NAVY }}>
+          <Icon size={14} />
+        </div>
+        <h3 className="text-[13.5px] font-semibold" style={{ color: INK }}>{title}</h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ZonePicker({ zones, value, onChange, onManage }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex flex-1 gap-2 overflow-x-auto pb-1 scrollbar-none">
+        {zones.map((z) => {
+          const active = value === z;
+          return (
+            <button
+              key={z}
+              type="button"
+              onClick={() => onChange(z)}
+              className="shrink-0 whitespace-nowrap rounded-full border px-3.5 py-2 font-mono text-[11px] font-semibold uppercase tracking-wide transition-colors"
+              style={{ borderColor: active ? NAVY : LINE, background: active ? NAVY : "transparent", color: active ? PAPER : "#6B6558" }}
+            >
+              {z}
+            </button>
+          );
+        })}
+      </div>
+      <button type="button" onClick={onManage} aria-label="Gérer les emplacements" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border" style={{ borderColor: LINE, color: MUTED }}>
+        <Settings2 size={14} />
+      </button>
+    </div>
+  );
+}
+
+function CategoryPicker({ categories, value, onChange, onManage }) {
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2">
+        {categories.map((c) => {
+          const active = value === c.key;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => onChange(c.key)}
+              className="rounded-xl border px-3 py-2.5 text-center text-[12px] font-medium leading-tight transition-colors"
+              style={{ borderColor: active ? RUST : LINE, background: active ? "rgba(217,98,44,0.08)" : "white", color: active ? RUST : INK }}
+            >
+              {c.label}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={onManage}
+        className="mt-2 flex items-center gap-1 text-[11px] font-semibold"
+        style={{ color: NAVY }}
+      >
+        <Settings2 size={12} />
+        Gérer les catégories
+      </button>
+    </div>
+  );
+}
+
+function PhotoThumb({ src, onRemove }) {
+  return (
+    <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border" style={{ borderColor: LINE }}>
+      {src === "seed" ? (
+        <div className="flex h-full w-full items-center justify-center" style={{ background: PAPER_DEEP, color: MUTED }}>
+          <ImageOff size={18} />
+        </div>
+      ) : (
+        <img src={src} alt="" className="h-full w-full object-cover" />
+      )}
+      {onRemove && (
+        <button onClick={onRemove} aria-label="Retirer la photo" className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full" style={{ background: "rgba(20,18,16,0.65)" }}>
+          <X size={10} color="white" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function LotRow({ lot, index, onEdit, onDelete }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onEdit(lot)}
+      className="group relative flex w-full items-center gap-3 border-b py-3 text-left last:border-0"
+      style={{ borderColor: LINE }}
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold" style={{ background: PAPER_DEEP, color: NAVY }}>
+        {index + 1}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-[9.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>{lot.zone}</span>
+          {lot.photos.length > 0 && (
+            <span className="flex items-center gap-0.5" style={{ color: MUTED }}>
+              <Camera size={11} strokeWidth={2.25} />
+              <span className="font-mono text-[9.5px]">{lot.photos.length}</span>
+            </span>
+          )}
+        </div>
+        <p className="truncate text-[13.5px] font-medium" style={{ color: INK }}>{lot.desig}</p>
+      </div>
+      <div className="shrink-0 font-mono text-[13.5px] font-semibold tabular-nums" style={{ color: lot.value === null ? MUTED : NAVY }}>
+        {euros(lot.value)}
+      </div>
+      <Pencil size={13} strokeWidth={2} className="shrink-0 opacity-40" style={{ color: MUTED }} />
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={(e) => { e.stopPropagation(); onDelete(lot.id); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); onDelete(lot.id); } }}
+        aria-label="Supprimer le lot"
+        className="shrink-0 rounded-full p-1.5"
+        style={{ color: "#B5301B" }}
+      >
+        <Trash2 size={15} strokeWidth={2} />
+      </span>
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Nouveau dossier
+// ---------------------------------------------------------------------------
+function NewCaseTab({ requerants, onAddRequerant, onCreateCase }) {
+  const [selectedReq, setSelectedReq] = useState(requerants[0]?.id ?? null);
+  const [reqSheetOpen, setReqSheetOpen] = useState(false);
+  const [reqDraft, setReqDraft] = useState(emptyRequerant);
+
+  const [c, setC] = useState(emptyCaseDraft);
+  const setField = (k) => (e) => setC((prev) => ({ ...prev, [k]: e.target.value }));
+
+  const canCreate =
+    selectedReq && c.denomination.trim() && c.adresseSiege.trim() && c.adresseLieu.trim();
+
+  function saveRequerant() {
+    if (!reqDraft.denomination.trim()) return;
+    const id = "r" + Date.now();
+    onAddRequerant({ ...reqDraft, id });
+    setSelectedReq(id);
+    setReqDraft(emptyRequerant);
+    setReqSheetOpen(false);
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto px-5 py-4">
+      <SectionCard icon={Gavel} title="Requérant (mandataire liquidateur)">
+        <div className="mb-3 space-y-2">
+          {requerants.map((r) => {
+            const active = selectedReq === r.id;
+            return (
+              <button
+                key={r.id}
+                onClick={() => setSelectedReq(r.id)}
+                className="flex w-full items-center justify-between rounded-xl border px-3.5 py-2.5 text-left"
+                style={{ borderColor: active ? NAVY : LINE, background: active ? "rgba(31,56,100,0.06)" : "white" }}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-semibold" style={{ color: INK }}>{r.denomination}</p>
+                  <p className="truncate text-[11px]" style={{ color: MUTED }}>{r.nom} · {r.adresse}</p>
+                </div>
+                {active && <Check size={16} style={{ color: NAVY }} className="shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={() => setReqSheetOpen(true)}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed py-2.5 text-[12.5px] font-semibold"
+          style={{ borderColor: LINE, color: NAVY }}
+        >
+          <Plus size={15} />
+          Nouveau requérant
+        </button>
+      </SectionCard>
+
+      <SectionCard icon={Building2} title="Défendeur">
+        <SirenLookup onFound={(data) => setC((prev) => ({ ...prev, ...data }))} />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Forme juridique" value={c.formeJuridique} onChange={setField("formeJuridique")} placeholder="SARL" />
+          <Field label="Capital" value={c.capital} onChange={setField("capital")} placeholder="1 000" />
+        </div>
+        <Field label="Dénomination sociale" value={c.denomination} onChange={setField("denomination")} placeholder="Ex. IZOA" />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Ville RCS" value={c.rcsVille} onChange={setField("rcsVille")} placeholder="Quimper" />
+          <Field label="N° RCS / SIREN" value={c.rcsNumero} onChange={(e) => setC((p) => ({ ...p, rcsNumero: formatGrouped3(e.target.value) }))} placeholder="979 626 306" />
+        </div>
+        <Field label="Adresse du siège social" value={c.adresseSiege} onChange={setField("adresseSiege")} placeholder="108 Avenue de la Gare, 29900 Concarneau" />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Représentant légal" value={c.representant} onChange={setField("representant")} placeholder="Prénom Nom" />
+          <Field label="Qualité" value={c.qualiteRepresentant} onChange={setField("qualiteRepresentant")} placeholder="Gérant(e)" />
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={Gavel} title="Jugement">
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Tribunal de commerce de" value={c.tribunal} onChange={setField("tribunal")} placeholder="Quimper" />
+          <Field label="Date du jugement" type="date" value={c.dateJugement} onChange={setField("dateJugement")} />
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={MapPin} title="Inventaire">
+        <Field label="Adresse du lieu de l'inventaire" value={c.adresseLieu} onChange={setField("adresseLieu")} placeholder="Idem siège social si vide" />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Date" type="date" value={c.dateInventaire} onChange={setField("dateInventaire")} />
+          <Field label="Heure de début" type="time" value={c.heureDebut} onChange={setField("heureDebut")} />
+        </div>
+      </SectionCard>
+
+      <button
+        onClick={() => canCreate && onCreateCase(c, requerants.find((r) => r.id === selectedReq))}
+        disabled={!canCreate}
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35"
+        style={{ background: RUST, color: PAPER }}
+      >
+        <FilePlus2 size={17} />
+        Créer le dossier et démarrer l'inventaire
+      </button>
+      <div className="h-6" />
+
+      <Sheet
+        open={reqSheetOpen}
+        onClose={() => setReqSheetOpen(false)}
+        eyebrow="Requérant"
+        title="Nouveau requérant"
+        z={40}
+        footer={
+          <button
+            onClick={saveRequerant}
+            disabled={!reqDraft.denomination.trim()}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold active:scale-[0.98] transition-transform disabled:opacity-35"
+            style={{ background: NAVY, color: PAPER }}
+          >
+            <Check size={17} />
+            Enregistrer ce requérant
+          </button>
+        }
+      >
+        <PappersAutocomplete
+          value={reqDraft.denomination}
+          onChange={(v) => setReqDraft((p) => ({ ...p, denomination: v }))}
+          onSelect={(r) => setReqDraft({ ...r })}
+        />
+        <p className="-mt-2 mb-4 text-[11px]" style={{ color: MUTED }}>
+          Sélectionnez une étude dans la liste pour remplir automatiquement le capital, le RCS, l'adresse et le représentant. Vous pouvez ensuite tout corriger à la main.
+        </p>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Capital (€)" value={reqDraft.capital} onChange={(e) => setReqDraft((p) => ({ ...p, capital: e.target.value }))} placeholder="200 000" />
+          <Field label="Ville RCS" value={reqDraft.rcsVille} onChange={(e) => setReqDraft((p) => ({ ...p, rcsVille: e.target.value }))} placeholder="Brest" />
+        </div>
+        <Field label="N° RCS" value={reqDraft.rcsNumero} onChange={(e) => setReqDraft((p) => ({ ...p, rcsNumero: formatGrouped3(e.target.value) }))} placeholder="808 072 821" />
+        <Field label="Adresse du siège" value={reqDraft.adresse} onChange={(e) => setReqDraft((p) => ({ ...p, adresse: e.target.value }))} placeholder="62A Quai de l'Odet, 29000 Quimper" />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Représentant" value={reqDraft.nom} onChange={(e) => setReqDraft((p) => ({ ...p, nom: e.target.value }))} placeholder="Prénom Nom" />
+          <Field label="Qualité" value={reqDraft.qualite} onChange={(e) => setReqDraft((p) => ({ ...p, qualite: e.target.value }))} placeholder="Gérant" />
+        </div>
+      </Sheet>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Inventaire (field capture)
+// ---------------------------------------------------------------------------
+function InventoryTab({ caseInfo, onEditCase, initialData, dossierId, onSaved }) {
+  const [zones, setZones] = useState(initialData?.zones || SEED_ZONES);
+  const [zoneSheetOpen, setZoneSheetOpen] = useState(false);
+  const [newZone, setNewZone] = useState("");
+
+  const [categories, setCategories] = useState(initialData?.categories || SEED_CATEGORIES);
+  const [catSheetOpen, setCatSheetOpen] = useState(false);
+  const [newCatLabel, setNewCatLabel] = useState("");
+
+  const [lots, setLots] = useState(initialData?.lots || SEED_LOTS);
+  const [zone, setZone] = useState((initialData?.zones || SEED_ZONES)[0]);
+  const [cat, setCat] = useState("materiel");
+  const [desig, setDesig] = useState("");
+  const [value, setValue] = useState("");
+  const [memoire, setMemoire] = useState(false);
+  const [photos, setPhotos] = useState([]);
+  const [processingPhotos, setProcessingPhotos] = useState(false);
+  const [showStamp, setShowStamp] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [savingDossier, setSavingDossier] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const nextId = useRef((initialData?.lots?.length || SEED_LOTS.length) + 1);
+  const fileInputRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const [listening, setListening] = useState(false);
+  const [dictationSupported] = useState(
+    () => typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition)
+  );
+
+  function toggleDictation() {
+    if (!dictationSupported) return;
+
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = "fr-FR";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+
+    recognition.onresult = (event) => {
+      let finalText = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
+      }
+      if (finalText.trim()) {
+        setDesig((prev) => (prev ? `${prev.trim()} ${finalText.trim()}` : finalText.trim()).toUpperCase());
+      }
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setListening(true);
+  }
+
+  useEffect(() => {
+    return () => recognitionRef.current?.stop();
+  }, []);
+
+  function openNewLot() {
+    setEditingId(null);
+    setZone(zones[0]);
+    setCat("materiel");
+    setDesig("");
+    setValue("");
+    setMemoire(false);
+    setPhotos([]);
+    setSheetOpen(true);
+  }
+
+  function openEditLot(lot) {
+    setEditingId(lot.id);
+    setZone(lot.zone);
+    setCat(lot.cat);
+    setDesig(lot.desig);
+    setValue(lot.value === null ? "" : String(lot.value));
+    setMemoire(lot.value === null);
+    setPhotos(lot.photos);
+    setSheetOpen(true);
+  }
+
+  const totals = useMemo(() => {
+    const byCat = Object.fromEntries(categories.map((c) => [c.key, 0]));
+    let grand = 0;
+    for (const l of lots) {
+      if (l.value !== null) {
+        byCat[l.cat] = (byCat[l.cat] ?? 0) + l.value;
+        grand += l.value;
+      }
+    }
+    return { byCat, grand };
+  }, [lots, categories]);
+
+  const canAdd = desig.trim().length > 0 && (memoire || value !== "");
+  const isEditing = editingId !== null;
+
+  function saveLot() {
+    if (!canAdd) return;
+    const payload = { zone, cat, desig: desig.trim(), value: memoire ? null : Number(value), photos };
+    if (isEditing) {
+      setLots((prev) => prev.map((l) => (l.id === editingId ? { ...l, ...payload } : l)));
+    } else {
+      setLots((prev) => [...prev, { id: nextId.current++, ...payload }]);
+    }
+    setSheetOpen(false);
+    setEditingId(null);
+    setShowStamp(true);
+    window.setTimeout(() => setShowStamp(false), 520);
+  }
+
+  function deleteLot(id) {
+    setLots((prev) => prev.filter((l) => l.id !== id));
+  }
+
+  async function handleFiles(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    setProcessingPhotos(true);
+    try {
+      const urls = await Promise.all(files.map(watermarkImage));
+      setPhotos((prev) => [...prev, ...urls]);
+    } finally {
+      setProcessingPhotos(false);
+    }
+  }
+
+  function removePhoto(idx) {
+    setPhotos((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  function addZone() {
+    const z = newZone.trim().toUpperCase();
+    if (!z || zones.includes(z)) return;
+    setZones((prev) => [...prev, z]);
+    setNewZone("");
+  }
+
+  function removeZone(z) {
+    setZones((prev) => prev.filter((x) => x !== z));
+    if (zone === z && zones.length > 1) setZone(zones.find((x) => x !== z));
+  }
+
+  function addCategory() {
+    const label = newCatLabel.trim();
+    if (!label) return;
+    const key = label
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!key || categories.some((c) => c.key === key)) return;
+    setCategories((prev) => [...prev, { key, label }]);
+    setNewCatLabel("");
+  }
+
+  function removeCategory(key) {
+    setCategories((prev) => prev.filter((c) => c.key !== key));
+    if (cat === key && categories.length > 1) {
+      setCat(categories.find((c) => c.key !== key).key);
+    }
+  }
+
+  const catLabel = (key) => categories.find((c) => c.key === key)?.label ?? key;
+
+  const [exporting, setExporting] = useState(false);
+
+  async function saveToCloud() {
+    setSavingDossier(true);
+    setSaveMessage("");
+    const { data, error } = await saveDossier({ id: dossierId, caseInfo, lots, zones, categories });
+    setSavingDossier(false);
+    if (error) {
+      setSaveMessage("Échec de l'enregistrement : " + error.message);
+      return;
+    }
+    setSaveMessage("Dossier enregistré (" + new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + ")");
+    onSaved?.(data?.id);
+  }
+  const [exportError, setExportError] = useState("");
+  const [exportedFile, setExportedFile] = useState(null); // { url, filename }
+
+  async function exportToWord() {
+    setExporting(true);
+    setExportError("");
+    setExportedFile(null);
+    try {
+      const req = caseInfo.requerant || {};
+      const today = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+      const dateInv = caseInfo.dateInventaire
+        ? new Date(caseInfo.dateInventaire).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+        : today;
+      const dateJug = caseInfo.dateJugement
+        ? new Date(caseInfo.dateJugement).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+        : "[DATE DU JUGEMENT]";
+
+      const NAVY_HEX = "1F3864";
+      const LINE_HEX = "DCD5C4";
+      const RECAP_HEX = "D9E2F3";
+
+      // Pre-fetch every real (non-seed) photo as raw bytes for embedding.
+      const photoBytesCache = {};
+      for (const l of lots) {
+        for (const src of l.photos) {
+          if (src !== "seed" && !photoBytesCache[src]) {
+            try {
+              const res = await fetch(src);
+              photoBytesCache[src] = new Uint8Array(await res.arrayBuffer());
+            } catch {
+              photoBytesCache[src] = null;
+            }
+          }
+        }
+      }
+
+      const P = (text, opts = {}) =>
+        new Paragraph({
+          alignment: opts.align || AlignmentType.JUSTIFIED,
+          spacing: { after: 160 },
+          children: [new TextRun({ text, bold: !!opts.bold, italics: !!opts.italics, size: 22 })],
+        });
+
+      const cell = (text, opts = {}) =>
+        new TableCell({
+          width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
+          shading: opts.fill ? { type: ShadingType.CLEAR, fill: opts.fill } : undefined,
+          verticalAlign: VerticalAlign.CENTER,
+          children: [
+            new Paragraph({
+              alignment: opts.align || AlignmentType.LEFT,
+              children: [
+                new TextRun({
+                  text,
+                  bold: !!opts.bold,
+                  italics: !!opts.italics,
+                  color: opts.color,
+                  size: 19,
+                }),
+              ],
+            }),
+          ],
+        });
+
+      const lotTableRows = [
+        new TableRow({
+          tableHeader: true,
+          children: [
+            cell("N° de lot", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 8, align: AlignmentType.CENTER }),
+            cell("Catégorie", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 20 }),
+            cell("Désignation", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 52 }),
+            cell("Valeur de réalisation", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 20, align: AlignmentType.RIGHT }),
+          ],
+        }),
+        ...(lots.length
+          ? lots.map(
+              (l, i) =>
+                new TableRow({
+                  children: [
+                    cell(String(i + 1), { align: AlignmentType.CENTER, bold: true }),
+                    cell(catLabel(l.cat), { italics: true }),
+                    cell(
+                      `[${l.zone}] ${l.desig}` +
+                        (l.photos.length ? `  (${l.photos.length} photo${l.photos.length > 1 ? "s" : ""}, voir annexe)` : "")
+                    ),
+                    cell(euros(l.value), { align: AlignmentType.RIGHT, bold: true }),
+                  ],
+                })
+            )
+          : [
+              new TableRow({
+                children: [
+                  new TableCell({
+                    columnSpan: 4,
+                    children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun("Aucun lot constaté")] })],
+                  }),
+                ],
+              }),
+            ]),
+      ];
+
+      const recapTableRows = [
+        new TableRow({
+          tableHeader: true,
+          children: [
+            cell("Rubrique", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 70 }),
+            cell("Valeur de réalisation", { fill: NAVY_HEX, color: "FFFFFF", bold: true, width: 30, align: AlignmentType.RIGHT }),
+          ],
+        }),
+        ...categories.map(
+          (c) =>
+            new TableRow({
+              children: [
+                cell(c.label, { fill: RECAP_HEX }),
+                cell(euros(totals.byCat[c.key]), { fill: RECAP_HEX, bold: true, align: AlignmentType.RIGHT }),
+              ],
+            })
+        ),
+        new TableRow({
+          children: [
+            cell("TOTAL GENERAL", { fill: NAVY_HEX, color: "FFFFFF", bold: true }),
+            cell(euros(totals.grand), { fill: NAVY_HEX, color: "FFFFFF", bold: true, align: AlignmentType.RIGHT }),
+          ],
+        }),
+      ];
+
+      const costTableRows = [
+        new TableRow({ children: [cell("Emoluments R444-3"), cell("[A CALCULER]", { align: AlignmentType.RIGHT })] }),
+        new TableRow({ children: [cell("TVA"), cell("[A CALCULER]", { align: AlignmentType.RIGHT })] }),
+        new TableRow({
+          children: [
+            cell("TOTAL TTC", { fill: NAVY_HEX, color: "FFFFFF", bold: true }),
+            cell("[A CALCULER]", { fill: NAVY_HEX, color: "FFFFFF", bold: true, align: AlignmentType.RIGHT }),
+          ],
+        }),
+      ];
+
+      // Photo annex — one image + caption per block, 2 per page.
+      const photoAnnexChildren = [];
+      if (lots.some((l) => l.photos.length)) {
+        photoAnnexChildren.push(
+          new Paragraph({ children: [new PageBreak()] }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 240 },
+            children: [new TextRun({ text: "ANNEXE PHOTOGRAPHIQUE", bold: true, size: 26, color: NAVY_HEX })],
+          })
+        );
+        let photoCount = 0;
+        lots.forEach((l, li) => {
+          l.photos.forEach((src, pi) => {
+            const bytes = src === "seed" ? null : photoBytesCache[src];
+            photoCount++;
+            if (bytes) {
+              photoAnnexChildren.push(
+                new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  spacing: { after: 80 },
+                  children: [new ImageRun({ data: bytes, transformation: { width: 320, height: 320 } })],
+                })
+              );
+            } else {
+              photoAnnexChildren.push(P("[photo d'exemple non incluse]", { align: AlignmentType.CENTER, italics: true }));
+            }
+            photoAnnexChildren.push(
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 240 },
+                children: [
+                  new TextRun({
+                    text: `Lot n°${li + 1} — ${l.desig} — photo ${pi + 1}/${l.photos.length}`,
+                    italics: true,
+                    size: 16,
+                    color: "8A8371",
+                  }),
+                ],
+              })
+            );
+            if (photoCount % 2 === 0) photoAnnexChildren.push(new Paragraph({ children: [new PageBreak()] }));
+          });
+        });
+      }
+
+      const doc = new Document({
+        sections: [
+          {
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 80 },
+                children: [new TextRun({ text: "PROCES-VERBAL DE CONSTAT D'INVENTAIRE", bold: true, size: 30 })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 240 },
+                children: [
+                  new TextRun({
+                    text: `Document généré le ${today} — brouillon issu de l'application de saisie terrain`,
+                    italics: true,
+                    size: 18,
+                  }),
+                ],
+              }),
+              P("A LA REQUETE DE :", { bold: true }),
+              P(
+                `${req.denomination || "[DENOMINATION DU MANDATAIRE]"}, au capital de ${req.capital || "[MONTANT]"} euros, inscrite au registre du commerce et des sociétés de ${req.rcsVille || "[VILLE RCS]"} sous le numéro ${req.rcsNumero || "[N° RCS]"}, dont le siège social est situé ${req.adresse || "[ADRESSE DU MANDATAIRE]"}, agissant poursuites et diligences de son représentant légal ${req.nom || "[REPRESENTANT]"}, ${req.qualite || "[QUALITE]"},`
+              ),
+              P(
+                `Agissant en qualité de mandataire liquidateur dans le cadre de la liquidation judiciaire de la ${caseInfo.formeJuridique || "[FORME]"} ${caseInfo.denomination || "[DENOMINATION]"}, au capital de ${caseInfo.capital || "[CAPITAL]"} euros, inscrite au RCS de ${caseInfo.rcsVille || "[VILLE]"} sous le numéro ${caseInfo.rcsNumero || "[N°]"}, dont le siège social est situé ${caseInfo.adresseSiege || "[ADRESSE]"}, représentée par ${caseInfo.representant || "[REPRESENTANT]"}, ${caseInfo.qualiteRepresentant || "[QUALITE]"},`
+              ),
+              P(
+                `En vertu d'un jugement rendu par le Tribunal de Commerce de ${caseInfo.tribunal || "[VILLE]"}, en date du ${dateJug}, prononçant la liquidation judiciaire susvisée, et des articles L.641-1 et suivants du Code de commerce,`
+              ),
+              P("Qu'elle me requiert afin de dresser un procès-verbal de constat et toutes constatations utiles à la sauvegarde de ses droits,"),
+              P(`Me suis rendu, ${caseInfo.address}, le ${dateInv} à ${caseInfo.heureDebut || "[HEURE]"},`),
+              P("Et j'ai constaté ce qui suit :"),
+              P(`Activité exercée : [A COMPLETER]. Statut : ${caseInfo.formeJuridique || "[FORME]"}, société de capitaux. Capital : ${caseInfo.capital || "[CAPITAL]"} €.`),
+
+              new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: "Copie des pièces reçues :", bold: true })] }),
+              new Paragraph({ bullet: { level: 0 }, children: [new TextRun("Extrait Kbis — "), new TextRun({ text: "NON OBTENU", bold: true, highlight: "yellow" })] }),
+              new Paragraph({ bullet: { level: 0 }, children: [new TextRun("Bilan et compte de résultat — "), new TextRun({ text: "NON OBTENU", bold: true, highlight: "yellow" })] }),
+              new Paragraph({ bullet: { level: 0 }, spacing: { after: 240 }, children: [new TextRun("Etat des privilèges et nantissements — "), new TextRun({ text: "NON OBTENU", bold: true, highlight: "yellow" })] }),
+
+              new Paragraph({ spacing: { before: 120, after: 120 }, children: [new TextRun({ text: "INVENTAIRE DES LOTS", bold: true, size: 26, color: NAVY_HEX })] }),
+              new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: lotTableRows }),
+
+              new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "RECAPITULATIF PAR RUBRIQUE", bold: true, size: 26, color: NAVY_HEX })] }),
+              new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: recapTableRows }),
+
+              new Paragraph({
+                spacing: { before: 240 },
+                children: [
+                  new TextRun(
+                    "Ayant satisfait à la mission pour laquelle j'avais été requis, j'ai suspendu mes opérations et de tout ce qui précède, j'ai dressé le présent procès-verbal de constat pour servir et valoir ce que de droit à ma requérante."
+                  ),
+                ],
+              }),
+
+              new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "Coût :", bold: true })] }),
+              new Table({ width: { size: 60, type: WidthType.PERCENTAGE }, rows: costTableRows }),
+
+              ...photoAnnexChildren,
+
+              new Paragraph({
+                spacing: { before: 480 },
+                children: [
+                  new TextRun({
+                    text: "Export automatique depuis l'application de saisie terrain — document de travail à relire et compléter (pièces reçues, coûts, mentions légales, signature) avant remise officielle dans le modèle de l'étude.",
+                    size: 16,
+                    color: "8A8371",
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const safeName = (caseInfo.denomination || "inventaire").replace(/[^a-z0-9]+/gi, "_");
+      const filename = `PV_inventaire_${safeName}.docx`;
+      const file = new File([blob], filename, {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+
+      // Always keep a manual link ready — the iOS Share Sheet gives no
+      // confirmation once a target is chosen, so if "Save to Files" /
+      // "Open in Word" silently fails or the person isn't sure it worked,
+      // they still have a guaranteed way to grab the file themselves.
+      const url = URL.createObjectURL(blob);
+      setExportedFile({ url, filename });
+
+      // iOS (Safari and installed PWAs) handles the native Share Sheet far
+      // more reliably than a simulated <a download> click, which is often
+      // silently swallowed in standalone/home-screen mode. Desktop browsers
+      // fall back to a normal download.
+      let shared = false;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: filename,
+            text: "Procès-verbal d'inventaire (brouillon)",
+          });
+          shared = true;
+          setExportError("");
+        } catch (shareErr) {
+          // AbortError = the person just cancelled the share sheet — not a real error.
+          if (shareErr?.name === "AbortError") shared = true;
+        }
+      }
+
+      if (!shared) {
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch {
+          // Manual link below covers this case.
+        }
+      }
+    } catch (err) {
+      setExportError(
+        "Échec de la génération du document (" + (err?.message || "erreur inconnue") + "). Réessayez ; si ça persiste, réduisez le nombre de photos et retentez."
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <>
+      <StampBurst show={showStamp} />
+
+      <div className="shrink-0 px-5 pb-4 pt-5" style={{ background: NAVY, color: PAPER }}>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em]" style={{ color: "#9FB0C9" }}>Inventaire en cours</p>
+            <h1 className="mt-0.5 truncate text-[18px] font-semibold leading-tight">{caseInfo.name}</h1>
+          </div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ background: RUST }}>
+            <Stamp size={18} color={PAPER} strokeWidth={2} />
+          </div>
+        </div>
+        <button onClick={onEditCase} className="mt-3 flex items-center gap-1.5 rounded-full py-1 text-[11.5px]" style={{ color: "#C3CEDE" }}>
+          <MapPin size={12} />
+          <span className="truncate">{caseInfo.address}</span>
+          <Pencil size={11} className="shrink-0 opacity-70" />
+        </button>
+        <span className="mt-1 flex items-center gap-1 text-[11.5px]" style={{ color: "#C3CEDE" }}>
+          <Clock size={12} /> {caseInfo.heureDebut || "14:02"}
+        </span>
+      </div>
+
+      <div className="flex shrink-0 divide-x overflow-x-auto border-b scrollbar-none" style={{ borderColor: LINE, background: PAPER_DEEP }}>
+        {categories.map((c) => (
+          <div key={c.key} className="shrink-0 px-3 py-2.5 text-center" style={{ minWidth: `${100 / Math.min(categories.length, 3)}%` }}>
+            <p className="truncate font-mono text-[8.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>{c.label}</p>
+            <p className="mt-0.5 font-mono text-[13px] font-bold tabular-nums" style={{ color: NAVY }}>{euros(totals.byCat[c.key])}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 pt-3">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Lots constatés</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{lots.length} lot{lots.length > 1 ? "s" : ""}</span>
+        </div>
+
+        {lots.length === 0 ? (
+          <div className="mt-10 rounded-2xl border border-dashed px-4 py-8 text-center" style={{ borderColor: LINE }}>
+            <p className="text-[13px]" style={{ color: MUTED }}>Aucun lot constaté pour l'instant. Touchez « Ajouter un lot » pour commencer l'inventaire.</p>
+          </div>
+        ) : (
+          <div>
+            {lots.map((lot, i) => (
+              <LotRow key={lot.id} lot={lot} index={i} onEdit={openEditLot} onDelete={deleteLot} />
+            ))}
+          </div>
+        )}
+        <div className="h-4" />
+      </div>
+
+      <div className="shrink-0 border-t px-5 pb-4 pt-3" style={{ borderColor: LINE, background: PAPER }}>
+        <div className="mb-3 flex items-center justify-between">
+          <span className="font-mono text-[11px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Total général</span>
+          <span className="font-mono text-[19px] font-bold tabular-nums" style={{ color: NAVY }}>{euros(totals.grand)}</span>
+        </div>
+        <button onClick={openNewLot} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold shadow-sm active:scale-[0.98] transition-transform" style={{ background: RUST, color: PAPER }}>
+          <Plus size={18} strokeWidth={2.5} />
+          Ajouter un lot
+        </button>
+        {supabaseConfigured && (
+          <button
+            onClick={saveToCloud}
+            disabled={savingDossier}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35"
+            style={{ borderColor: "#2D6A4F", color: "#2D6A4F" }}
+          >
+            <Cloud size={16} />
+            {savingDossier ? "Enregistrement…" : dossierId ? "Mettre à jour le dossier" : "Enregistrer le dossier"}
+          </button>
+        )}
+        {saveMessage && (
+          <p className="mt-1.5 text-center text-[11px]" style={{ color: "#2D6A4F" }}>{saveMessage}</p>
+        )}
+        <button
+          onClick={exportToWord}
+          disabled={lots.length === 0 || exporting}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35"
+          style={{ borderColor: NAVY, color: NAVY }}
+        >
+          <FileDown size={16} />
+          {exporting ? "Préparation du document…" : "Exporter vers le modèle Word"}
+        </button>
+        {exportError && (
+          <p className="mt-2 rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>
+            {exportError}
+          </p>
+        )}
+        {exportedFile && (
+          <div className="mt-2 rounded-xl px-3 py-2.5" style={{ background: "rgba(45,106,79,0.08)" }}>
+            <p className="mb-1.5 text-[11.5px]" style={{ color: "#2D6A4F" }}>
+              Document prêt. Si le partage n'a rien donné de visible, ouvrez-le directement ici :
+            </p>
+            <a
+              href={exportedFile.url}
+              download={exportedFile.filename}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[12.5px] font-semibold"
+              style={{ background: "#2D6A4F", color: "white" }}
+            >
+              <FileDown size={14} />
+              Ouvrir / enregistrer {exportedFile.filename}
+            </a>
+          </div>
+        )}
+      </div>
+
+      <Sheet
+        open={sheetOpen}
+        onClose={() => { setSheetOpen(false); setEditingId(null); }}
+        eyebrow={isEditing ? "Modifier le lot" : "Nouveau lot"}
+        title={isEditing ? `N° ${lots.findIndex((l) => l.id === editingId) + 1}` : `N° ${lots.length + 1}`}
+        footer={
+          <button onClick={saveLot} disabled={!canAdd} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35" style={{ background: RUST, color: PAPER }}>
+            <Stamp size={17} />
+            {isEditing ? "Enregistrer les modifications" : `Constater ce lot — ${catLabel(cat)}`}
+          </button>
+        }
+      >
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Emplacement</label>
+        <ZonePicker zones={zones} value={zone} onChange={setZone} onManage={() => setZoneSheetOpen(true)} />
+
+        <label className="mb-1.5 mt-5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Catégorie</label>
+        <CategoryPicker categories={categories} value={cat} onChange={setCat} onManage={() => setCatSheetOpen(true)} />
+
+        <label className="mb-1.5 mt-5 flex items-center justify-between font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+          <span>Désignation</span>
+          {dictationSupported && (
+            <button
+              type="button"
+              onClick={toggleDictation}
+              className="flex items-center gap-1 rounded-full px-2.5 py-1 normal-case tracking-normal transition-colors"
+              style={{
+                background: listening ? "#B5301B" : PAPER_DEEP,
+                color: listening ? "white" : NAVY,
+              }}
+            >
+              <Mic size={12} className={listening ? "animate-pulse" : ""} />
+              <span className="text-[10.5px] font-semibold">{listening ? "Écoute…" : "Dicter"}</span>
+            </button>
+          )}
+        </label>
+        {!dictationSupported && (
+          <p className="mb-1.5 -mt-1 text-[10.5px]" style={{ color: MUTED }}>
+            Dictée vocale non disponible dans ce navigateur (fonctionne sur Chrome/Edge et dans une vraie app mobile).
+          </p>
+        )}
+        <textarea
+          value={desig}
+          onChange={(e) => setDesig(e.target.value)}
+          placeholder="Ex. UNE PLAQUE DE CUISSON PERFOREE BARTSCHER"
+          rows={2}
+          className="w-full resize-none rounded-xl border px-3.5 py-3 text-[14px] outline-none"
+          style={{ borderColor: LINE, background: "white", color: INK }}
+        />
+
+        <label className="mb-1.5 mt-5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Valeur de réalisation</label>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <input
+              type="number"
+              inputMode="numeric"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              disabled={memoire}
+              placeholder="0"
+              className="w-full rounded-xl border px-3.5 py-3 pr-9 text-[15px] font-mono outline-none tabular-nums disabled:opacity-40"
+              style={{ borderColor: LINE, background: "white", color: INK }}
+            />
+            <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 font-mono text-[14px]" style={{ color: MUTED }}>€</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setMemoire((m) => !m); setValue(""); }}
+            className="shrink-0 rounded-xl border px-3.5 py-3 text-[12.5px] font-semibold"
+            style={{ borderColor: memoire ? NAVY : LINE, background: memoire ? NAVY : "white", color: memoire ? PAPER : MUTED }}
+          >
+            Mémoire
+          </button>
+        </div>
+
+        <label className="mb-1.5 mt-5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Photos du lot</label>
+        <div className="flex flex-wrap gap-2">
+          {photos.map((src, i) => (
+            <PhotoThumb key={src + i} src={src} onRemove={() => removePhoto(i)} />
+          ))}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={processingPhotos}
+            className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed disabled:opacity-50"
+            style={{ borderColor: LINE, color: MUTED }}
+            aria-label="Ajouter une photo"
+          >
+            <Camera size={17} />
+            <span className="text-[9px] font-medium text-center leading-tight">{processingPhotos ? "Filigrane…" : "Ajouter"}</span>
+          </button>
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple onChange={handleFiles} className="hidden" />
+        </div>
+        <p className="mt-1.5 text-[10px]" style={{ color: MUTED }}>
+          © SCP Brelivet Tanguy est incrusté automatiquement sur chaque photo.
+        </p>
+      </Sheet>
+
+      <Sheet open={zoneSheetOpen} onClose={() => setZoneSheetOpen(false)} eyebrow="Configuration" title="Emplacements">
+        <p className="mb-4 text-[13px]" style={{ color: MUTED }}>
+          Ajoutez ou retirez les zones utilisées pour classer les lots de ce dossier.
+        </p>
+        <div className="mb-5 space-y-2">
+          {zones.map((z) => (
+            <div key={z} className="flex items-center justify-between rounded-xl border px-3.5 py-2.5" style={{ borderColor: LINE, background: "white" }}>
+              <span className="font-mono text-[12px] font-semibold uppercase tracking-wide" style={{ color: INK }}>{z}</span>
+              <button onClick={() => removeZone(z)} disabled={zones.length <= 1} aria-label={`Retirer ${z}`} className="rounded-full p-1 disabled:opacity-30" style={{ color: "#B5301B" }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Nouvel emplacement</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newZone}
+            onChange={(e) => setNewZone(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addZone()}
+            placeholder="Ex. TERRASSE"
+            className="flex-1 rounded-xl border px-3.5 py-2.5 text-[13.5px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+          <button onClick={addZone} className="flex items-center justify-center gap-1 rounded-xl px-4 text-[13px] font-semibold" style={{ background: NAVY, color: PAPER }}>
+            <Plus size={15} />
+            Ajouter
+          </button>
+        </div>
+      </Sheet>
+
+      <Sheet open={catSheetOpen} onClose={() => setCatSheetOpen(false)} eyebrow="Configuration" title="Catégories">
+        <p className="mb-4 text-[13px]" style={{ color: MUTED }}>
+          Ajoutez ou retirez les catégories utilisées pour classer les lots de ce dossier.
+        </p>
+        <div className="mb-5 space-y-2">
+          {categories.map((c) => (
+            <div key={c.key} className="flex items-center justify-between rounded-xl border px-3.5 py-2.5" style={{ borderColor: LINE, background: "white" }}>
+              <span className="text-[13px] font-medium" style={{ color: INK }}>{c.label}</span>
+              <button onClick={() => removeCategory(c.key)} disabled={categories.length <= 1} aria-label={`Retirer ${c.label}`} className="rounded-full p-1 disabled:opacity-30" style={{ color: "#B5301B" }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Nouvelle catégorie</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newCatLabel}
+            onChange={(e) => setNewCatLabel(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addCategory()}
+            placeholder="Ex. Véhicules"
+            className="flex-1 rounded-xl border px-3.5 py-2.5 text-[13.5px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+          <button onClick={addCategory} className="flex items-center justify-center gap-1 rounded-xl px-4 text-[13px] font-semibold" style={{ background: NAVY, color: PAPER }}>
+            <Plus size={15} />
+            Ajouter
+          </button>
+        </div>
+      </Sheet>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Constat d'affichage — création du dossier
+// ---------------------------------------------------------------------------
+const emptyRequerantPersonne = {
+  natureRequerant: "physique", // "physique" | "morale"
+  // personne physique
+  civilite: "Madame",
+  nom: "",
+  neLe: "",
+  neA: "",
+  nationalite: "Française",
+  profession: "",
+  adresse: "",
+  // personne morale
+  denomination: "",
+  formeJuridique: "SARL",
+  capital: "",
+  rcsVille: "",
+  rcsNumero: "",
+  representantNom: "",
+  representantQualite: "Gérant(e)",
+};
+
+const PANNEAU_TYPES = ["Permis de construire", "Permis de démolir", "Permis d'aménager", "Déclaration préalable", "Autre"];
+
+const emptyAffichageCase = {
+  adresseConstat: "",
+  commune: "",
+  contexte: "",
+  dateConstat: "",
+  heureConstat: "",
+  passage: "premier",
+  totalHT: "",
+};
+
+const emptyPanneau = {
+  type: "Permis de construire",
+  beneficiaire: "",
+  autorisationNo: "",
+  delivreLe: "",
+  affichageMairieLe: "",
+  adresseDossier: "",
+  surfaceBatiments: "",
+  nbLots: "",
+  superficieTerrain: "",
+  surfacePlancher: "",
+  hauteurConstruction: "",
+  natureTravaux: "",
+};
+
+function NewAffichageCaseTab({ onCreateCase }) {
+  const [requerants, setRequerants] = useState([{ ...emptyRequerantPersonne }]);
+  const [c, setC] = useState(emptyAffichageCase);
+  const setField = (k) => (e) => setC((prev) => ({ ...prev, [k]: e.target.value }));
+
+  function updateRequerant(i, field, value) {
+    setRequerants((prev) => prev.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
+  }
+  function addRequerant() {
+    setRequerants((prev) => [...prev, { ...emptyRequerantPersonne }]);
+  }
+  function removeRequerant(i) {
+    setRequerants((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  const requerantNomOk = (r) => (r?.natureRequerant === "morale" ? r.denomination?.trim() : r?.nom?.trim());
+  const canCreate = requerantNomOk(requerants[0]) && c.adresseConstat.trim();
+
+  return (
+    <div className="flex-1 overflow-y-auto px-5 py-4">
+      <SectionCard icon={Gavel} title="Requérant(s)">
+        {requerants.map((r, i) => (
+          <div key={i} className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE }}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                Requérant {i + 1}
+              </span>
+              {requerants.length > 1 && (
+                <button onClick={() => removeRequerant(i)} className="rounded-full p-1" style={{ color: "#B5301B" }}>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+
+            <div className="mb-3 flex gap-2">
+              {[
+                { key: "physique", label: "Personne physique" },
+                { key: "morale", label: "Personne morale" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => updateRequerant(i, "natureRequerant", opt.key)}
+                  className="flex-1 rounded-xl border py-2 text-[12px] font-semibold"
+                  style={{
+                    borderColor: r.natureRequerant === opt.key ? RUST : LINE,
+                    background: r.natureRequerant === opt.key ? "rgba(217,98,44,0.08)" : "white",
+                    color: r.natureRequerant === opt.key ? RUST : INK,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {r.natureRequerant === "physique" ? (
+              <>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Civilité" value={r.civilite} onChange={(e) => updateRequerant(i, "civilite", e.target.value)} placeholder="Madame / Monsieur" />
+                  <Field label="Nom, prénom" value={r.nom} onChange={(e) => updateRequerant(i, "nom", e.target.value)} placeholder="Valérie MIGRENNE" />
+                </div>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Né(e) le" type="date" value={r.neLe} onChange={(e) => updateRequerant(i, "neLe", e.target.value)} />
+                  <Field label="à" value={r.neA} onChange={(e) => updateRequerant(i, "neA", e.target.value)} placeholder="Ville" />
+                </div>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Nationalité" value={r.nationalite} onChange={(e) => updateRequerant(i, "nationalite", e.target.value)} />
+                  <Field label="Profession" value={r.profession} onChange={(e) => updateRequerant(i, "profession", e.target.value)} />
+                </div>
+                <Field label="Adresse" value={r.adresse} onChange={(e) => updateRequerant(i, "adresse", e.target.value)} placeholder="Adresse complète" />
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Forme juridique" value={r.formeJuridique} onChange={(e) => updateRequerant(i, "formeJuridique", e.target.value)} placeholder="SARL" />
+                  <Field label="Capital" value={r.capital} onChange={(e) => updateRequerant(i, "capital", e.target.value)} placeholder="1 000" />
+                </div>
+                <Field label="Dénomination sociale" value={r.denomination} onChange={(e) => updateRequerant(i, "denomination", e.target.value)} placeholder="Ex. IZOA" />
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Ville RCS" value={r.rcsVille} onChange={(e) => updateRequerant(i, "rcsVille", e.target.value)} placeholder="Quimper" />
+                  <Field label="N° RCS / SIREN" value={r.rcsNumero} onChange={(e) => updateRequerant(i, "rcsNumero", formatGrouped3(e.target.value))} placeholder="979 626 306" />
+                </div>
+                <Field label="Adresse du siège social" value={r.adresse} onChange={(e) => updateRequerant(i, "adresse", e.target.value)} placeholder="Adresse complète" />
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Représentant légal" value={r.representantNom} onChange={(e) => updateRequerant(i, "representantNom", e.target.value)} placeholder="Prénom Nom" />
+                  <Field label="Qualité" value={r.representantQualite} onChange={(e) => updateRequerant(i, "representantQualite", e.target.value)} placeholder="Gérant(e)" />
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+        <button
+          onClick={addRequerant}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed py-2.5 text-[12.5px] font-semibold"
+          style={{ borderColor: LINE, color: NAVY }}
+        >
+          <Plus size={15} />
+          Ajouter un second requérant
+        </button>
+      </SectionCard>
+
+      <SectionCard icon={Camera} title="Constat">
+        <Field label="Adresse du constat" value={c.adresseConstat} onChange={setField("adresseConstat")} placeholder="33 rue des Pins à Concarneau" />
+        <Field label="Commune (mairie ayant délivré l'autorisation)" value={c.commune} onChange={setField("commune")} placeholder="Concarneau" />
+        <div className="mb-4">
+          <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+            Contexte (exposé des faits) — laissez vide pour utiliser la phrase type
+          </label>
+          <textarea
+            value={c.contexte}
+            onChange={setField("contexte")}
+            rows={3}
+            placeholder={`Vide = "Qu'elles ont obtenu de la mairie de ${c.commune || "[COMMUNE]"} une autorisation d'urbanisme."`}
+            className="w-full resize-none rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Date" type="date" value={c.dateConstat} onChange={setField("dateConstat")} />
+          <Field label="Heure" type="time" value={c.heureConstat} onChange={setField("heureConstat")} />
+        </div>
+        <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+          Passage
+        </label>
+        <div className="mb-1 flex gap-2">
+          {[
+            { key: "premier", label: "1er passage" },
+            { key: "second", label: "2ème passage" },
+            { key: "troisieme", label: "3ème passage" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => setC((p) => ({ ...p, passage: opt.key }))}
+              className="flex-1 rounded-xl border py-2.5 text-[12px] font-semibold"
+              style={{
+                borderColor: c.passage === opt.key ? NAVY : LINE,
+                background: c.passage === opt.key ? NAVY : "white",
+                color: c.passage === opt.key ? PAPER : MUTED,
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={FileDown} title="Coût">
+        <div className="mb-3">
+          <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Total HT (€)</label>
+          <input
+            type="number"
+            inputMode="decimal"
+            value={c.totalHT}
+            onChange={setField("totalHT")}
+            placeholder="144.17"
+            className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+        </div>
+        {(() => {
+          const ht = parseFloat((c.totalHT || "0").toString().replace(",", ".")) || 0;
+          const tva = ht * 0.2;
+          const ttc = ht + tva;
+          return (
+            <>
+              <div className="flex items-center justify-between border-t py-1.5" style={{ borderColor: LINE }}>
+                <span className="text-[12px]" style={{ color: MUTED }}>TVA (20%)</span>
+                <span className="font-mono text-[13px]" style={{ color: INK }}>{eurosCost(tva)}</span>
+              </div>
+              <div className="flex items-center justify-between border-t pt-2.5" style={{ borderColor: LINE }}>
+                <span className="text-[12.5px] font-semibold" style={{ color: INK }}>Total TTC</span>
+                <span className="font-mono text-[15px] font-bold" style={{ color: NAVY }}>{eurosCost(ttc)}</span>
+              </div>
+            </>
+          );
+        })()}
+      </SectionCard>
+
+      <button
+        onClick={() => canCreate && onCreateCase(c, requerants)}
+        disabled={!canCreate}
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35"
+        style={{ background: RUST, color: PAPER }}
+      >
+        <FilePlus2 size={17} />
+        Créer le dossier et démarrer le constat
+      </button>
+      <div className="h-6" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Constat d'affichage — saisie terrain (panneaux + photos)
+// ---------------------------------------------------------------------------
+function AffichageTab({ caseInfo, onEditCase, initialData, dossierId, onSaved }) {
+  const [panneaux, setPanneaux] = useState(initialData?.panneaux || []);
+  const [photos, setPhotos] = useState(initialData?.photos || []);
+  const [processingPhotos, setProcessingPhotos] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [draft, setDraft] = useState(emptyPanneau);
+  const [showStamp, setShowStamp] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [exportedFile, setExportedFile] = useState(null);
+  const [savingDossier, setSavingDossier] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [totalHT, setTotalHT] = useState(initialData?.cout?.totalHT ?? caseInfo.totalHT ?? "");
+  const [heureFin, setHeureFin] = useState(initialData?.cloture?.heureFin ?? "");
+  const [nombreFeuillets, setNombreFeuillets] = useState(initialData?.cloture?.nombreFeuillets ?? "");
+  const TVA_RATE = 20;
+  const fileInputRef = useRef(null);
+  const aiFileInputRef = useRef(null);
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiError, setAiError] = useState("");
+
+  const [videos, setVideos] = useState(initialData?.videos || []); // [{ url, watermarked }]
+  const videoInputRef = useRef(null);
+  const [processingVideo, setProcessingVideo] = useState(false);
+  const [videoProgress, setVideoProgress] = useState("");
+  const [videoError, setVideoError] = useState("");
+
+  const [dictaphoneText, setDictaphoneText] = useState(initialData?.dictaphone?.text || "");
+  const [dictaphoneAudioUrl, setDictaphoneAudioUrl] = useState(initialData?.dictaphone?.audioUrl || null);
+  const [dictaphoneAudioUploading, setDictaphoneAudioUploading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [dictationSupported] = useState(
+    () => typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition) && navigator.mediaDevices?.getUserMedia
+  );
+  const speechRecognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaChunksRef = useRef([]);
+  const mediaStreamRef = useRef(null);
+
+  async function handleVideoFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setProcessingVideo(true);
+    setVideoError("");
+    setVideoProgress("Traitement…");
+    try {
+      let blob = null;
+      let watermarked = false;
+      if (isVideoWatermarkSupported()) {
+        blob = await watermarkVideo(file, (p) => setVideoProgress(`Filigrane… ${Math.round(p * 100)}%`));
+        watermarked = !!blob;
+      }
+      if (!blob) blob = file;
+      setVideoProgress("Calcul de l'empreinte…");
+      const fingerprint = await sha256Hex(blob);
+      setVideoProgress("Envoi…");
+      const { url, error } = await uploadVideo(blob, file.name || "video.mp4");
+      if (error || !url) {
+        setVideoError("Échec de l'envoi de la vidéo : " + (error?.message || "erreur inconnue"));
+        return;
+      }
+      setVideos((prev) => [...prev, { url, watermarked, fingerprint, filename: file.name || "video.mp4" }]);
+    } catch (err) {
+      setVideoError("Échec du traitement (" + (err?.message || "erreur") + ").");
+    } finally {
+      setProcessingVideo(false);
+      setVideoProgress("");
+    }
+  }
+  function removeVideo(i) {
+    setVideos((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function toggleDictaphone() {
+    if (recording) {
+      speechRecognitionRef.current?.stop();
+      mediaRecorderRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      setRecording(false);
+      return;
+    }
+    if (!dictationSupported) return;
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        mediaStreamRef.current = stream;
+        mediaChunksRef.current = [];
+        const recorder = new MediaRecorder(stream);
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) mediaChunksRef.current.push(e.data);
+        };
+        recorder.onstop = async () => {
+          const audioBlob = new Blob(mediaChunksRef.current, { type: "audio/webm" });
+          setDictaphoneAudioUploading(true);
+          const { url } = await uploadAudio(audioBlob, "dictaphone.webm");
+          setDictaphoneAudioUploading(false);
+          if (url) setDictaphoneAudioUrl(url);
+        };
+        mediaRecorderRef.current = recorder;
+        recorder.start();
+
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognitionCtor();
+        recognition.lang = "fr-FR";
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.onresult = (event) => {
+          let finalText = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
+          }
+          if (finalText.trim()) {
+            setDictaphoneText((prev) => (prev ? `${prev.trim()} ${finalText.trim()}` : finalText.trim()));
+          }
+        };
+        recognition.onerror = () => {};
+        recognition.onend = () => {};
+        speechRecognitionRef.current = recognition;
+        recognition.start();
+
+        setRecording(true);
+      })
+      .catch(() => setVideoError("Accès au microphone refusé."));
+  }
+
+  useEffect(() => {
+    return () => {
+      speechRecognitionRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleAiPhoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setAiAnalyzing(true);
+    setAiError("");
+    try {
+      const imageBase64 = await fileToBase64(file);
+      const res = await fetch("/.netlify/functions/extract-panneau", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ imageBase64, mediaType: file.type || "image/jpeg" }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setAiError(data.error || "Échec de l'analyse. Réessayez avec une photo plus nette et bien cadrée.");
+        return;
+      }
+      setDraft((prev) => ({
+        ...prev,
+        type: data.type || prev.type,
+        beneficiaire: data.beneficiaire || prev.beneficiaire,
+        autorisationNo: data.autorisationNo || prev.autorisationNo,
+        delivreLe: data.delivreLe || prev.delivreLe,
+        affichageMairieLe: data.affichageMairieLe || prev.affichageMairieLe,
+        adresseDossier: data.adresseDossier || prev.adresseDossier,
+        surfaceBatiments: data.surfaceBatiments || prev.surfaceBatiments,
+        nbLots: data.nbLots || prev.nbLots,
+        superficieTerrain: data.superficieTerrain || prev.superficieTerrain,
+        surfacePlancher: data.surfacePlancher || prev.surfacePlancher,
+        hauteurConstruction: data.hauteurConstruction || prev.hauteurConstruction,
+        natureTravaux: data.natureTravaux || prev.natureTravaux,
+      }));
+    } catch (err) {
+      setAiError("Échec de l'analyse (" + (err?.message || "erreur réseau") + "). Réessayez.");
+    } finally {
+      setAiAnalyzing(false);
+    }
+  }
+
+  const totalHTNum = parseFloat((totalHT || "0").toString().replace(",", ".")) || 0;
+  const tvaAmount = totalHTNum * (TVA_RATE / 100);
+  const totalTTC = totalHTNum + tvaAmount;
+
+  function openNewPanneau() {
+    setEditingIdx(null);
+    setDraft(emptyPanneau);
+    setAiError("");
+    setSheetOpen(true);
+  }
+  function openEditPanneau(i) {
+    setEditingIdx(i);
+    setDraft(panneaux[i]);
+    setAiError("");
+    setSheetOpen(true);
+  }
+  function savePanneau() {
+    if (!draft.beneficiaire.trim() && !draft.autorisationNo.trim()) return;
+    if (editingIdx !== null) {
+      setPanneaux((prev) => prev.map((p, i) => (i === editingIdx ? draft : p)));
+    } else {
+      setPanneaux((prev) => [...prev, draft]);
+    }
+    setSheetOpen(false);
+    setShowStamp(true);
+    window.setTimeout(() => setShowStamp(false), 520);
+  }
+  function deletePanneau(i) {
+    setPanneaux((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  async function handleFiles(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    setProcessingPhotos(true);
+    try {
+      const urls = await Promise.all(files.map(watermarkImage));
+      setPhotos((prev) => [...prev, ...urls]);
+    } finally {
+      setProcessingPhotos(false);
+    }
+  }
+  function removePhoto(idx) {
+    setPhotos((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  async function saveToCloud() {
+    setSavingDossier(true);
+    setSaveMessage("");
+    const { data, error } = await saveDossier({
+      id: dossierId,
+      caseInfo,
+      lots: [],
+      zones: [],
+      categories: [],
+      extra: {
+        panneaux,
+        photos,
+        videos,
+        cout: { totalHT },
+        cloture: { heureFin, nombreFeuillets },
+        dictaphone: { text: dictaphoneText, audioUrl: dictaphoneAudioUrl },
+      },
+    });
+    setSavingDossier(false);
+    if (error) {
+      setSaveMessage("Échec de l'enregistrement : " + error.message);
+      return;
+    }
+    setSaveMessage("Dossier enregistré (" + new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + ")");
+    onSaved?.(data?.id);
+  }
+
+  async function exportToWord() {
+    setExporting(true);
+    setExportError("");
+    setExportedFile(null);
+    try {
+      const dateC = caseInfo.dateConstat
+        ? new Date(caseInfo.dateConstat).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+        : "[DATE]";
+
+      const photoBytesCache = {};
+      for (const src of photos) {
+        try {
+          const res = await fetch(src);
+          photoBytesCache[src] = new Uint8Array(await res.arrayBuffer());
+        } catch {
+          photoBytesCache[src] = null;
+        }
+      }
+
+      async function fetchBytes(url) {
+        try {
+          const res = await fetch(url);
+          return new Uint8Array(await res.arrayBuffer());
+        } catch {
+          return null;
+        }
+      }
+      const [cover1Bytes, cover2Bytes, closingBytes] = await Promise.all([
+        fetchBytes("/affichage-cover-1.jpg"),
+        fetchBytes("/affichage-cover-2.jpg"),
+        fetchBytes("/affichage-closing.jpg"),
+      ]);
+      // Pages A4 pleine page (marges réduites) : 570pt de large affichés en
+      // "pixels" docx (1pt = 1.3333px), hauteur calculée pour conserver le
+      // ratio A4 (1654x2339) des images sources.
+      const FULL_PAGE_W = Math.round(570 * 1.3333);
+      const FULL_PAGE_H = Math.round((570 / 1654) * 2339 * 1.3333);
+      const fullPageImage = (bytes) =>
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 0 },
+          children: bytes ? [new ImageRun({ data: bytes, transformation: { width: FULL_PAGE_W, height: FULL_PAGE_H } })] : [new TextRun("")],
+        });
+      const FULL_PAGE_MARGINS = { top: 200, bottom: 200, left: 200, right: 200 };
+      const A4_SIZE = { width: 11906, height: 16838 };
+
+      const P = (text, opts = {}) =>
+        new Paragraph({
+          alignment: opts.align || AlignmentType.JUSTIFIED,
+          spacing: { after: 160 },
+          children: [new TextRun({ text, bold: !!opts.bold, size: 22 })],
+        });
+
+      // docx.js ne convertit pas les "\n" en sauts de ligne automatiquement —
+      // il faut explicitement une TextRun par ligne avec {break: 1}.
+      const multilineRuns = (text, opts = {}) =>
+        text.split("\n").map((line, i) =>
+          i === 0
+            ? new TextRun({ text: line, size: opts.size || 22, italics: !!opts.italics, bold: !!opts.bold })
+            : new TextRun({ text: line, size: opts.size || 22, italics: !!opts.italics, bold: !!opts.bold, break: 1 })
+        );
+
+      const reqParagraphs = (caseInfo.requerants || []).flatMap((r, i) => {
+        const text =
+          r.natureRequerant === "morale"
+            ? `${r.denomination || "[DENOMINATION]"}, ${r.formeJuridique || "[FORME]"} au capital de ${r.capital || "[CAPITAL]"} euros, immatriculée au registre du commerce et des sociétés de ${r.rcsVille || "[VILLE]"} sous le numéro ${r.rcsNumero || "[N°]"}, dont le siège social est situé ${r.adresse || "[ADRESSE]"}, représentée par ${r.representantNom || "[REPRESENTANT]"}, ${r.representantQualite || "[QUALITE]"},`
+            : `${r.civilite} ${r.nom}, née ${r.neLe ? "le " + new Date(r.neLe).toLocaleDateString("fr-FR") : "[DATE]"} à ${r.neA || "[LIEU]"}, de nationalité ${r.nationalite}, ${r.profession || "[PROFESSION]"}, demeurant ${r.adresse || "[ADRESSE]"},`;
+        return [P(i === 0 ? "A LA DEMANDE DE :" : "ET DE :", { bold: true }), P(text)];
+      });
+
+      const RECOURS_DEMOLITION =
+        "Le délai de recours contentieux est de deux mois à compter du premier jour d'une période continue de deux mois d'affichage sur le terrain du présent panneau (art. R. 600-2 du code de l'urbanisme).\nTout recours administratif ou tout recours contentieux doit, à peine d'irrecevabilité, être notifié à l'auteur de la décision et au bénéficiaire du permis ou de la décision prise sur la déclaration préalable. Cette notification doit être adressée par lettre recommandée avec accusé de réception dans un délai de quinze jours francs à compter du dépôt du recours (art. R. 600-1 du code de l'urbanisme).";
+
+      const LEGAL_ARTICLES = [
+        [
+          "Article A424-15 du Code de l'urbanisme",
+          "Mention du permis explicite ou tacite ou de la déclaration préalable doit être affichée sur le terrain, de manière visible de l'extérieur, par les soins de son bénéficiaire, dès la notification de l'arrêté ou dès la date à laquelle le permis tacite ou la décision de non-opposition à la déclaration préalable est acquis et pendant toute la durée du chantier. Cet affichage n'est pas obligatoire pour les déclarations préalables portant sur une coupe ou un abattage d'arbres situés en dehors des secteurs urbanisés.\nCet affichage mentionne également l'obligation, prévue à peine d'irrecevabilité par l'article R. 600-1, de notifier tout recours administratif ou tout recours contentieux à l'auteur de la décision et au bénéficiaire du permis ou de la décision prise sur la déclaration préalable.\nEn outre, dans les huit jours de la délivrance expresse ou tacite du permis ou de la décision de non-opposition à la déclaration préalable, un extrait du permis ou de la déclaration, le cas échéant accompagné de la décision explicite de l'autorité administrative mentionnée au II de l'article L. 632-2 du code du patrimoine, est publié par voie d'affichage à la mairie pendant deux mois. Lorsqu'une dérogation ou une adaptation mineure est accordée, l'affichage en mairie porte sur l'intégralité de l'arrêté. L'exécution de la formalité d'affichage en mairie fait l'objet d'une mention au registre chronologique des actes de publication et de notification des arrêtés du maire prévu à l'article R. 2122-7 du code général des collectivités territoriales.\nUn arrêté du ministre chargé de l'urbanisme règle le contenu et les formes de l'affichage.",
+        ],
+        [
+          "Article R424-17 du Code de l'urbanisme",
+          "Le panneau d'affichage comprend la mention suivante :\n« Droit de recours :\nLe délai de recours contentieux est de deux mois à compter du premier jour d'une période continue de deux mois d'affichage sur le terrain du présent panneau (art. R. 600-2 du code de l'urbanisme).\nTout recours administratif ou tout recours contentieux doit, à peine d'irrecevabilité, être notifié à l'auteur de la décision et au bénéficiaire du permis ou de la décision prise sur la déclaration préalable. Cette notification doit être adressée par lettre recommandée avec accusé de réception dans un délai de quinze jours francs à compter du dépôt du recours (art. R. 600-1 du code de l'urbanisme). »",
+        ],
+        [
+          "Article R424-18 du Code de l'urbanisme",
+          "Le panneau d'affichage doit être installé de telle sorte que les renseignements qu'il contient demeurent lisibles de la voie publique ou des espaces ouverts au public pendant toute la durée du chantier.",
+        ],
+        [
+          "Article R600-2 du Code de l'urbanisme",
+          "Le délai de recours contentieux à l'encontre d'une décision de non-opposition à une déclaration préalable ou d'un permis de construire, d'aménager ou de démolir court à l'égard des tiers à compter du premier jour d'une période continue de deux mois d'affichage sur le terrain des pièces mentionnées à l'article R. 424-15.",
+        ],
+        [
+          "Article R424-16 du Code de l'urbanisme",
+          "Le panneau prévu à l'article A. 424-1 (1) indique le nom, la raison sociale ou la dénomination sociale du bénéficiaire, la date et le numéro du permis, la nature du projet et la superficie du terrain ainsi que l'adresse de la mairie où le dossier peut être consulté.\nIl indique également, en fonction de la nature du projet :\na) Si le projet prévoit des constructions, la superficie du plancher hors œuvre nette autorisée ainsi que la hauteur de la ou des constructions, exprimée en mètres par rapport au sol naturel ;\nb) Si le projet porte sur un lotissement, le nombre maximum de lots prévus ;\nc) Si le projet porte sur un terrain de camping ou un parc résidentiel de loisirs, le nombre total d'emplacements et, s'il y a lieu, le nombre d'emplacements réservés à des habitations légères de loisirs.\nd) Si le projet prévoit des démolitions, la surface du ou des bâtiments à démolir.",
+        ],
+      ];
+
+      // QR codes d'accès aux vidéos (la vidéo elle-même n'est pas intégrée
+      // au .docx — trop volumineux — mais un QR code y renvoie).
+      const videoChildren = [];
+      if (videos.length) {
+        videoChildren.push(
+          new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "VIDEOS", bold: true, size: 26, color: "1F3864" })] })
+        );
+        for (let i = 0; i < videos.length; i++) {
+          const v = videos[i];
+          try {
+            const dataUrl = await qrDataUrl(v.url);
+            const base64 = dataUrl.split(",")[1];
+            const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+            videoChildren.push(
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 60 },
+                children: [new ImageRun({ data: bytes, transformation: { width: 160, height: 160 } })],
+              }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 60 },
+                children: [
+                  new TextRun({
+                    text: `Vidéo n°${i + 1} — scannez ce QR code pour visionner${v.watermarked ? " (filigranée)" : ""}`,
+                    italics: true,
+                    size: 18,
+                  }),
+                ],
+              }),
+              ...(v.fingerprint
+                ? [
+                    new Paragraph({
+                      alignment: AlignmentType.CENTER,
+                      spacing: { after: 200 },
+                      children: [
+                        new TextRun({
+                          text: `Cette vidéo est dotée d'une empreinte numérique (${v.fingerprint}) garantissant son authenticité et son intégrité.`,
+                          italics: true,
+                          size: 14,
+                          color: "8A8371",
+                        }),
+                      ],
+                    }),
+                  ]
+                : [])
+            );
+          } catch {
+            videoChildren.push(P(`Vidéo n°${i + 1} : ${v.url}`));
+          }
+        }
+      }
+
+      const dictaphoneChildren = dictaphoneText?.trim()
+        ? [
+            new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "RETRANSCRIPTION DICTAPHONE", bold: true, size: 26, color: "1F3864" })] }),
+            P(dictaphoneText.trim()),
+            ...(dictaphoneAudioUrl
+              ? [
+                  new Paragraph({
+                    spacing: { before: 80 },
+                    children: [new TextRun({ text: `Enregistrement audio : ${dictaphoneAudioUrl}`, italics: true, size: 16, color: "8A8371" })],
+                  }),
+                ]
+              : []),
+          ]
+        : [];
+
+      const legalMentionsChildren = [
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 240 },
+          children: [new TextRun({ text: "MENTIONS LEGALES", bold: true, size: 26, color: "1F3864" })],
+        }),
+        ...LEGAL_ARTICLES.flatMap(([title, body]) => [
+          new Paragraph({ spacing: { before: 160, after: 80 }, children: [new TextRun({ text: title, bold: true, size: 20 })] }),
+          new Paragraph({ spacing: { after: 80 }, alignment: AlignmentType.JUSTIFIED, children: multilineRuns(body, { size: 18 }) }),
+        ]),
+      ];
+
+      const panneauChildren = panneaux.flatMap((p, i) => {
+        const isDemolition = p.type === "Permis de démolir" || /d[ée]moli/i.test(p.natureTravaux || "");
+        const items = [
+          new Paragraph({
+            spacing: { before: 200, after: 100 },
+            children: [new TextRun({ text: `Panneau n°${i + 1} — ${p.type.toUpperCase()}`, bold: true, underline: {} })],
+          }),
+          new Paragraph({
+            spacing: { after: isDemolition ? 100 : 200 },
+            children: multilineRuns(
+              `Bénéficiaire : ${p.beneficiaire || "-"}\nAutorisation n° : ${p.autorisationNo || "-"}\nDélivré le : ${p.delivreLe || "-"}\nDate d'affichage en mairie : ${p.affichageMairieLe || "-"}\nAdresse où le dossier peut être consulté : ${p.adresseDossier || "-"}\nSurface des bâtiments à démolir : ${p.surfaceBatiments || "-"}\nNombre de lots maximum : ${p.nbLots || "-"}\nSuperficie du terrain : ${p.superficieTerrain || "-"}\nSurface de plancher : ${p.surfacePlancher || "-"}\nHauteur de la construction : ${p.hauteurConstruction || "-"}\nNature des travaux : ${p.natureTravaux || "-"}`,
+              { size: 20 }
+            ),
+          }),
+        ];
+        if (isDemolition) {
+          items.push(
+            new Paragraph({
+              spacing: { after: 200 },
+              children: multilineRuns(RECOURS_DEMOLITION, { italics: true, size: 18 }),
+            })
+          );
+        }
+        return items;
+      });
+
+      const photoChildren = photos.flatMap((src, i) => {
+        const bytes = photoBytesCache[src];
+        const items = [
+          new Paragraph({ spacing: { before: 160, after: 80 }, children: [new TextRun({ text: `Photo ${i + 1}`, bold: true })] }),
+        ];
+        if (bytes) {
+          items.push(
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              children: [new ImageRun({ data: bytes, transformation: { width: 380, height: 285 } })],
+            })
+          );
+        }
+        if ((i + 1) % 2 === 0) items.push(new Paragraph({ children: [new PageBreak()] }));
+        return items;
+      });
+
+      const doc = new Document({
+        sections: [
+          {
+            properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } },
+            children: [fullPageImage(cover1Bytes)],
+          },
+          {
+            properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } },
+            children: [fullPageImage(cover2Bytes)],
+          },
+          {
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 40 },
+                children: [new TextRun({ text: "PROCES-VERBAL DE CONSTAT DE COMMISSAIRE DE JUSTICE", bold: true, size: 28 })],
+              }),
+              ...(caseInfo.passage && caseInfo.passage !== "premier"
+                ? [
+                    new Paragraph({
+                      alignment: AlignmentType.CENTER,
+                      spacing: { after: 200 },
+                      children: [new TextRun({ text: caseInfo.passage === "troisieme" ? "TROISIEME PASSAGE" : "SECOND PASSAGE", bold: true })],
+                    }),
+                  ]
+                : []),
+              P(`L'an deux-mille-vingt-six et le ${dateC}, à ${caseInfo.heureDebut || "[HEURE]"},`),
+              ...reqParagraphs,
+              P("LESQUELLES M'EXPOSENT CE QUI SUIT :", { bold: true }),
+              P(caseInfo.contexte?.trim() || `Qu'elles ont obtenu de la mairie de ${caseInfo.commune || "[COMMUNE]"} une autorisation d'urbanisme.`),
+              P(
+                `Qu'elles me requièrent afin que je constate l'affichage régulier à l'adresse suivante : ${caseInfo.address}, conformément aux articles A 424-15 et suivants du Code de l'Urbanisme et R 600-2 et R 424-15 du même Code.`
+              ),
+              P("Déférant à cette réquisition,"),
+              P(
+                "Je, Tanguy BRELIVET, Commissaire de Justice Associé, Huissier de Justice, membre de la SCP BRELIVET Tanguy, titulaire d'un office de Commissaire de Justice à la résidence de Concarneau (29900), 20 avenue de la gare, ressort de la Cour d'Appel de Rennes, soussigné,"
+              ),
+              P("CERTIFIE M'ÊTRE RENDU CE JOUR :", { bold: true }),
+              P(`${caseInfo.address}, où là étant,`),
+              P("J'AI PROCEDE AUX CONSTATATIONS SUIVANTES :", { bold: true }),
+              ...panneauChildren,
+              ...photoChildren,
+              ...videoChildren,
+              ...dictaphoneChildren,
+              new Paragraph({ children: [new PageBreak()] }),
+              ...legalMentionsChildren,
+              new Paragraph({
+                spacing: { before: 240 },
+                children: [
+                  new TextRun(
+                    `Telles sont les constatations faites aux jours indiqués en tête du présent acte au ${caseInfo.address}, de tout quoi j'ai dressé et rédigé le présent procès-verbal de constat, avec photographies, pour servir et valoir ce que de droit.`
+                  ),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 160 },
+                children: [
+                  new TextRun(
+                    `Ayant satisfait à la mission pour laquelle j'avais été requis, j'ai suspendu mes opérations à ${heureFin || "[HEURE DE FIN]"} et je me suis retiré afin de dresser le présent procès-verbal.`
+                  ),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 160 },
+                children: [new TextRun(`Le présent acte comprend ${nombreFeuillets || "[NOMBRE]"} feuillets.`)],
+              }),
+              new Paragraph({
+                spacing: { before: 160 },
+                children: [new TextRun("Les photographies sont intégrées dans le corps du présent acte.")],
+              }),
+              new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "Coût de l'acte (arrêté du 28 février 2024) :", bold: true })] }),
+              new Table({
+                width: { size: 60, type: WidthType.PERCENTAGE },
+                rows: [
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("Total HT")] }),
+                      new TableCell({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun(totalHT ? eurosCost(totalHTNum) : "[A CALCULER]")] })] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("TVA 20%")] }),
+                      new TableCell({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun(totalHT ? eurosCost(tvaAmount) : "[A CALCULER]")] })] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ shading: { type: ShadingType.CLEAR, fill: "1F3864" }, children: [new Paragraph({ children: [new TextRun({ text: "Total TTC", bold: true, color: "FFFFFF" })] })] }),
+                      new TableCell({ shading: { type: ShadingType.CLEAR, fill: "1F3864" }, children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: totalHT ? eurosCost(totalTTC) : "[A CALCULER]", bold: true, color: "FFFFFF" })] })] }),
+                    ],
+                  }),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 120 },
+                children: [
+                  new TextRun({
+                    text: totalHT
+                      ? `Soit la somme de ${montantEnLettres(totalTTC)} (${eurosCost(totalTTC)})`
+                      : "[MONTANT EN TOUTES LETTRES A CALCULER]",
+                    italics: true,
+                  }),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 240 },
+                children: [
+                  new TextRun({
+                    text: "Export automatique depuis l'application de saisie terrain — document de travail à relire (mentions légales, articles du Code de l'urbanisme, signature) avant remise officielle.",
+                    size: 16,
+                    color: "8A8371",
+                  }),
+                ],
+              }),
+            ],
+          },
+          {
+            properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } },
+            children: [fullPageImage(closingBytes)],
+          },
+        ],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const safeName = (caseInfo.name || "constat_affichage").replace(/[^a-z0-9]+/gi, "_");
+      const filename = `Constat_affichage_${safeName}.docx`;
+      const file = new File([blob], filename, {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      });
+
+      const url = URL.createObjectURL(blob);
+      setExportedFile({ url, filename });
+
+      let shared = false;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: "Constat d'affichage (brouillon)" });
+          shared = true;
+        } catch (shareErr) {
+          if (shareErr?.name === "AbortError") shared = true;
+        }
+      }
+      if (!shared) {
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch {
+          // manual link below covers this case
+        }
+      }
+    } catch (err) {
+      setExportError("Échec de la génération (" + (err?.message || "erreur inconnue") + "). Réessayez.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <>
+      <StampBurst show={showStamp} />
+
+      <div className="shrink-0 px-5 pb-4 pt-5" style={{ background: NAVY, color: PAPER }}>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em]" style={{ color: "#9FB0C9" }}>Constat d'affichage</p>
+            <h1 className="mt-0.5 truncate text-[18px] font-semibold leading-tight">{caseInfo.name}</h1>
+          </div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ background: RUST }}>
+            <Camera size={18} color={PAPER} strokeWidth={2} />
+          </div>
+        </div>
+        <button onClick={onEditCase} className="mt-3 flex items-center gap-1.5 rounded-full py-1 text-[11.5px]" style={{ color: "#C3CEDE" }}>
+          <MapPin size={12} />
+          <span className="truncate">{caseInfo.address}</span>
+          <Pencil size={11} className="shrink-0 opacity-70" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 pt-3">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Panneaux constatés</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{panneaux.length}</span>
+        </div>
+        {panneaux.length === 0 ? (
+          <div className="rounded-2xl border border-dashed px-4 py-6 text-center" style={{ borderColor: LINE }}>
+            <p className="text-[13px]" style={{ color: MUTED }}>Aucun panneau constaté pour l'instant.</p>
+          </div>
+        ) : (
+          panneaux.map((p, i) => (
+            <button
+              key={i}
+              onClick={() => openEditPanneau(i)}
+              className="mb-2 flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left"
+              style={{ borderColor: LINE, background: "white" }}
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold" style={{ background: PAPER_DEEP, color: NAVY }}>
+                {i + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[12.5px] font-medium" style={{ color: INK }}>{p.type}</p>
+                <p className="truncate text-[11px]" style={{ color: MUTED }}>{p.beneficiaire || "Bénéficiaire non renseigné"} — {p.autorisationNo || "N° non renseigné"}</p>
+              </div>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); deletePanneau(i); }}
+                className="shrink-0 rounded-full p-1.5"
+                style={{ color: "#B5301B" }}
+              >
+                <Trash2 size={14} />
+              </span>
+            </button>
+          ))
+        )}
+
+        <div className="mt-5 mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Photos du site</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{photos.length}</span>
+        </div>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {photos.map((src, i) => (
+            <PhotoThumb key={src + i} src={src} onRemove={() => removePhoto(i)} />
+          ))}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={processingPhotos}
+            className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed disabled:opacity-50"
+            style={{ borderColor: LINE, color: MUTED }}
+          >
+            <Camera size={17} />
+            <span className="text-[9px] font-medium text-center leading-tight">{processingPhotos ? "Filigrane…" : "Ajouter"}</span>
+          </button>
+          <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple onChange={handleFiles} className="hidden" />
+        </div>
+
+        <div className="mt-5 mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Vidéos du site</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{videos.length}</span>
+        </div>
+        <div className="mb-2 flex flex-wrap gap-2">
+          {videos.map((v, i) => (
+            <div key={v.url || i} className="relative flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border" style={{ borderColor: LINE, background: PAPER_DEEP }}>
+              <Video size={18} style={{ color: NAVY }} />
+              <span className="text-[8px] font-medium" style={{ color: MUTED }}>{v.watermarked ? "OK" : "brute"}</span>
+              <button
+                onClick={() => removeVideo(i)}
+                aria-label="Retirer la vidéo"
+                className="absolute -right-1 -top-1 flex h-4.5 w-4.5 items-center justify-center rounded-full"
+                style={{ background: "rgba(20,18,16,0.65)" }}
+              >
+                <X size={10} color="white" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => videoInputRef.current?.click()}
+            disabled={processingVideo}
+            className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed disabled:opacity-50"
+            style={{ borderColor: LINE, color: MUTED }}
+          >
+            <Video size={17} />
+            <span className="text-[8px] font-medium text-center leading-tight">{processingVideo ? videoProgress : "Ajouter"}</span>
+          </button>
+          <input ref={videoInputRef} type="file" accept="video/*" capture="environment" onChange={handleVideoFile} className="hidden" />
+        </div>
+        {videoError && (
+          <p className="mb-2 rounded-xl px-3 py-2 text-[11px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{videoError}</p>
+        )}
+        {!isVideoWatermarkSupported() && (
+          <p className="mb-4 text-[10.5px]" style={{ color: MUTED }}>
+            Filigrane vidéo non supporté par ce navigateur — les vidéos seront ajoutées sans filigrane.
+          </p>
+        )}
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Dictaphone</h2>
+        </div>
+        <div className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          {dictationSupported ? (
+            <button
+              type="button"
+              onClick={toggleDictaphone}
+              className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl py-3 text-[13px] font-semibold"
+              style={{ background: recording ? "#B5301B" : NAVY, color: "white" }}
+            >
+              {recording ? <Square size={15} /> : <Mic size={15} />}
+              {recording ? "Arrêter l'enregistrement" : "Démarrer le dictaphone"}
+            </button>
+          ) : (
+            <p className="text-[11.5px]" style={{ color: MUTED }}>Dictaphone non disponible sur ce navigateur.</p>
+          )}
+          <textarea
+            value={dictaphoneText}
+            onChange={(e) => setDictaphoneText(e.target.value)}
+            rows={3}
+            placeholder="La retranscription apparaît ici pendant l'enregistrement — modifiable ensuite."
+            className="w-full resize-none rounded-xl border px-3.5 py-2.5 text-[13px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+          {dictaphoneAudioUploading && <p className="mt-1.5 text-[10.5px]" style={{ color: MUTED }}>Enregistrement audio en cours d'envoi…</p>}
+        </div>
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Clôture</h2>
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-x-3 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Heure de fin</label>
+            <input
+              type="time"
+              value={heureFin}
+              onChange={(e) => setHeureFin(e.target.value)}
+              className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+              style={{ borderColor: LINE, background: "white", color: INK }}
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Nombre de feuillets</label>
+            <input
+              type="number"
+              inputMode="numeric"
+              value={nombreFeuillets}
+              onChange={(e) => setNombreFeuillets(e.target.value)}
+              placeholder="Ex. 4"
+              className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+              style={{ borderColor: LINE, background: "white", color: INK }}
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Coût de l'acte</h2>
+        </div>
+        <div className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          <div className="mb-3">
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Total HT (€)</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              value={totalHT}
+              onChange={(e) => setTotalHT(e.target.value)}
+              placeholder="144.17"
+              className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+              style={{ borderColor: LINE, background: "white", color: INK }}
+            />
+          </div>
+          <div className="flex items-center justify-between border-t py-1.5" style={{ borderColor: LINE }}>
+            <span className="text-[12px]" style={{ color: MUTED }}>TVA (20%)</span>
+            <span className="font-mono text-[13px]" style={{ color: INK }}>{eurosCost(tvaAmount)}</span>
+          </div>
+          <div className="flex items-center justify-between border-t pt-2.5" style={{ borderColor: LINE }}>
+            <span className="text-[12.5px] font-semibold" style={{ color: INK }}>Total TTC</span>
+            <span className="font-mono text-[15px] font-bold" style={{ color: NAVY }}>{eurosCost(totalTTC)}</span>
+          </div>
+          {!!totalHT && (
+            <p className="mt-2 text-[11px] italic" style={{ color: MUTED }}>
+              Soit la somme de {montantEnLettres(totalTTC)} ({eurosCost(totalTTC)})
+            </p>
+          )}
+        </div>
+        <div className="h-4" />
+      </div>
+
+      <div className="shrink-0 border-t px-5 pb-4 pt-3" style={{ borderColor: LINE, background: PAPER }}>
+        <button onClick={openNewPanneau} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold shadow-sm active:scale-[0.98] transition-transform" style={{ background: RUST, color: PAPER }}>
+          <Plus size={18} strokeWidth={2.5} />
+          Ajouter un panneau
+        </button>
+        {supabaseConfigured && (
+          <button
+            onClick={saveToCloud}
+            disabled={savingDossier}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold disabled:opacity-35"
+            style={{ borderColor: "#2D6A4F", color: "#2D6A4F" }}
+          >
+            <Cloud size={16} />
+            {savingDossier ? "Enregistrement…" : dossierId ? "Mettre à jour le dossier" : "Enregistrer le dossier"}
+          </button>
+        )}
+        {saveMessage && <p className="mt-1.5 text-center text-[11px]" style={{ color: "#2D6A4F" }}>{saveMessage}</p>}
+        <button
+          onClick={exportToWord}
+          disabled={panneaux.length === 0 || exporting}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold disabled:opacity-35"
+          style={{ borderColor: NAVY, color: NAVY }}
+        >
+          <FileDown size={16} />
+          {exporting ? "Préparation du document…" : "Exporter vers le modèle Word"}
+        </button>
+        {exportError && (
+          <p className="mt-2 rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{exportError}</p>
+        )}
+        {exportedFile && (
+          <div className="mt-2 rounded-xl px-3 py-2.5" style={{ background: "rgba(45,106,79,0.08)" }}>
+            <p className="mb-1.5 text-[11.5px]" style={{ color: "#2D6A4F" }}>Document prêt :</p>
+            <a
+              href={exportedFile.url}
+              download={exportedFile.filename}
+              className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[12.5px] font-semibold"
+              style={{ background: "#2D6A4F", color: "white" }}
+            >
+              <FileDown size={14} />
+              Ouvrir / enregistrer {exportedFile.filename}
+            </a>
+          </div>
+        )}
+      </div>
+
+      <Sheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        eyebrow={editingIdx !== null ? "Modifier le panneau" : "Nouveau panneau"}
+        title={`Panneau n°${editingIdx !== null ? editingIdx + 1 : panneaux.length + 1}`}
+        footer={
+          <button onClick={savePanneau} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold active:scale-[0.98]" style={{ background: RUST, color: PAPER }}>
+            <Camera size={17} />
+            {editingIdx !== null ? "Enregistrer les modifications" : "Constater ce panneau"}
+          </button>
+        }
+      >
+        <button
+          type="button"
+          onClick={() => aiFileInputRef.current?.click()}
+          disabled={aiAnalyzing}
+          className="mb-4 flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-dashed py-3.5 text-[13.5px] font-semibold disabled:opacity-50"
+          style={{ borderColor: "#1F3864", color: NAVY, background: "rgba(31,56,100,0.04)" }}
+        >
+          <Sparkles size={16} />
+          {aiAnalyzing ? "Analyse du panneau en cours…" : "Photographier et remplir avec l'IA"}
+        </button>
+        <input ref={aiFileInputRef} type="file" accept="image/*" capture="environment" onChange={handleAiPhoto} className="hidden" />
+        {aiError && (
+          <p className="mb-4 rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{aiError}</p>
+        )}
+
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Type</label>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {PANNEAU_TYPES.map((t) => (
+            <button
+              key={t}
+              onClick={() => setDraft((p) => ({ ...p, type: t }))}
+              className="rounded-xl border px-3 py-2 text-[12px] font-medium"
+              style={{ borderColor: draft.type === t ? RUST : LINE, background: draft.type === t ? "rgba(217,98,44,0.08)" : "white", color: draft.type === t ? RUST : INK }}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        <Field label="Bénéficiaire" value={draft.beneficiaire} onChange={(e) => setDraft((p) => ({ ...p, beneficiaire: e.target.value }))} placeholder="Nom du bénéficiaire" />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="N° autorisation" value={draft.autorisationNo} onChange={(e) => setDraft((p) => ({ ...p, autorisationNo: e.target.value }))} placeholder="PD 29039 26 00012" />
+          <Field label="Délivré le" type="date" value={draft.delivreLe} onChange={(e) => setDraft((p) => ({ ...p, delivreLe: e.target.value }))} />
+        </div>
+        <Field label="Date d'affichage en mairie" type="date" value={draft.affichageMairieLe} onChange={(e) => setDraft((p) => ({ ...p, affichageMairieLe: e.target.value }))} />
+        <Field label="Adresse où le dossier peut être consulté" value={draft.adresseDossier} onChange={(e) => setDraft((p) => ({ ...p, adresseDossier: e.target.value }))} placeholder="Mairie..." />
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Surface bâtiments à démolir" value={draft.surfaceBatiments} onChange={(e) => setDraft((p) => ({ ...p, surfaceBatiments: e.target.value }))} placeholder="4 m²" />
+          <Field label="Nombre de lots max" value={draft.nbLots} onChange={(e) => setDraft((p) => ({ ...p, nbLots: e.target.value }))} placeholder="NC" />
+        </div>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Superficie du terrain" value={draft.superficieTerrain} onChange={(e) => setDraft((p) => ({ ...p, superficieTerrain: e.target.value }))} placeholder="425 m²" />
+          <Field label="Surface de plancher" value={draft.surfacePlancher} onChange={(e) => setDraft((p) => ({ ...p, surfacePlancher: e.target.value }))} placeholder="NC" />
+        </div>
+        <Field label="Hauteur de la construction" value={draft.hauteurConstruction} onChange={(e) => setDraft((p) => ({ ...p, hauteurConstruction: e.target.value }))} placeholder="NC" />
+        <label className="mb-1.5 mt-1 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Nature des travaux</label>
+        <textarea
+          value={draft.natureTravaux}
+          onChange={(e) => setDraft((p) => ({ ...p, natureTravaux: e.target.value }))}
+          rows={2}
+          className="w-full resize-none rounded-xl border px-3.5 py-3 text-[14px] outline-none"
+          style={{ borderColor: LINE, background: "white", color: INK }}
+        />
+      </Sheet>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Constat de voirie — création du dossier
+// ---------------------------------------------------------------------------
+const emptyVoirieCase = {
+  adresseConstat: "",
+  expose: "",
+  dateConstat: "",
+  heureConstat: "",
+  intervenantNom: "Tanguy BRELIVET",
+  intervenantQualite: "Commissaire de Justice Associé",
+  totalHT: "",
+};
+
+const emptyObservation = { description: "", photos: [] };
+
+function NewVoirieCaseTab({ onCreateCase }) {
+  const [requerants, setRequerants] = useState([{ ...emptyRequerantPersonne }]);
+  const [c, setC] = useState(emptyVoirieCase);
+  const setField = (k) => (e) => setC((prev) => ({ ...prev, [k]: e.target.value }));
+
+  function updateRequerant(i, field, value) {
+    setRequerants((prev) => prev.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
+  }
+  function addRequerant() {
+    setRequerants((prev) => [...prev, { ...emptyRequerantPersonne }]);
+  }
+  function removeRequerant(i) {
+    setRequerants((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  const requerantNomOk = (r) => (r?.natureRequerant === "morale" ? r.denomination?.trim() : r?.nom?.trim());
+  const canCreate = requerantNomOk(requerants[0]) && c.adresseConstat.trim();
+
+  return (
+    <div className="flex-1 overflow-y-auto px-5 py-4">
+      <SectionCard icon={Gavel} title="Requérant(s)">
+        {requerants.map((r, i) => (
+          <div key={i} className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE }}>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+                Requérant {i + 1}
+              </span>
+              {requerants.length > 1 && (
+                <button onClick={() => removeRequerant(i)} className="rounded-full p-1" style={{ color: "#B5301B" }}>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+            <div className="mb-3 flex gap-2">
+              {[
+                { key: "physique", label: "Personne physique" },
+                { key: "morale", label: "Personne morale" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => updateRequerant(i, "natureRequerant", opt.key)}
+                  className="flex-1 rounded-xl border py-2 text-[12px] font-semibold"
+                  style={{
+                    borderColor: r.natureRequerant === opt.key ? RUST : LINE,
+                    background: r.natureRequerant === opt.key ? "rgba(217,98,44,0.08)" : "white",
+                    color: r.natureRequerant === opt.key ? RUST : INK,
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            {r.natureRequerant === "physique" ? (
+              <>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Civilité" value={r.civilite} onChange={(e) => updateRequerant(i, "civilite", e.target.value)} placeholder="Madame / Monsieur" />
+                  <Field label="Nom, prénom" value={r.nom} onChange={(e) => updateRequerant(i, "nom", e.target.value)} placeholder="Nom Prénom" />
+                </div>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Né(e) le" type="date" value={r.neLe} onChange={(e) => updateRequerant(i, "neLe", e.target.value)} />
+                  <Field label="à" value={r.neA} onChange={(e) => updateRequerant(i, "neA", e.target.value)} placeholder="Ville" />
+                </div>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Nationalité" value={r.nationalite} onChange={(e) => updateRequerant(i, "nationalite", e.target.value)} />
+                  <Field label="Profession" value={r.profession} onChange={(e) => updateRequerant(i, "profession", e.target.value)} />
+                </div>
+                <Field label="Adresse" value={r.adresse} onChange={(e) => updateRequerant(i, "adresse", e.target.value)} placeholder="Adresse complète" />
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Forme juridique" value={r.formeJuridique} onChange={(e) => updateRequerant(i, "formeJuridique", e.target.value)} placeholder="SAS" />
+                  <Field label="Capital" value={r.capital} onChange={(e) => updateRequerant(i, "capital", e.target.value)} placeholder="1 000" />
+                </div>
+                <Field label="Dénomination sociale" value={r.denomination} onChange={(e) => updateRequerant(i, "denomination", e.target.value)} placeholder="Ex. EUROVIA BRETAGNE" />
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Ville RCS" value={r.rcsVille} onChange={(e) => updateRequerant(i, "rcsVille", e.target.value)} placeholder="Quimper" />
+                  <Field label="N° RCS / SIREN" value={r.rcsNumero} onChange={(e) => updateRequerant(i, "rcsNumero", formatGrouped3(e.target.value))} placeholder="722 028 586" />
+                </div>
+                <Field label="Adresse du siège social" value={r.adresse} onChange={(e) => updateRequerant(i, "adresse", e.target.value)} placeholder="Adresse complète" />
+                <div className="grid grid-cols-2 gap-x-3">
+                  <Field label="Représentant légal" value={r.representantNom} onChange={(e) => updateRequerant(i, "representantNom", e.target.value)} placeholder="Prénom Nom" />
+                  <Field label="Qualité" value={r.representantQualite} onChange={(e) => updateRequerant(i, "representantQualite", e.target.value)} placeholder="Gérant(e)" />
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+        <button
+          onClick={addRequerant}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl border-2 border-dashed py-2.5 text-[12.5px] font-semibold"
+          style={{ borderColor: LINE, color: NAVY }}
+        >
+          <Plus size={15} />
+          Ajouter un second requérant
+        </button>
+      </SectionCard>
+
+      <SectionCard icon={TrafficCone} title="Constat">
+        <Field label="Adresse du constat" value={c.adresseConstat} onChange={setField("adresseConstat")} placeholder="Chemin de la Villeneuve, Concarneau" />
+        <div className="mb-4">
+          <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>
+            Exposé de la requérante (mandat, contexte)
+          </label>
+          <textarea
+            value={c.expose}
+            onChange={setField("expose")}
+            rows={3}
+            placeholder="Ex. Qu'elle a été mandatée afin d'entreprendre des travaux d'aménagement..."
+            className="w-full resize-none rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Date" type="date" value={c.dateConstat} onChange={setField("dateConstat")} />
+          <Field label="Heure" type="time" value={c.heureConstat} onChange={setField("heureConstat")} />
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={Camera} title="Intervenant">
+        <p className="mb-3 text-[11.5px]" style={{ color: MUTED }}>
+          La personne qui se rend sur place n'est pas toujours la même (commissaire de justice ou clerc habilité).
+        </p>
+        <div className="grid grid-cols-2 gap-x-3">
+          <Field label="Nom" value={c.intervenantNom} onChange={setField("intervenantNom")} placeholder="Tanguy BRELIVET" />
+          <Field label="Qualité" value={c.intervenantQualite} onChange={setField("intervenantQualite")} placeholder="Commissaire de Justice Associé" />
+        </div>
+      </SectionCard>
+
+      <SectionCard icon={FileDown} title="Coût">
+        <div className="mb-1">
+          <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Total HT (€) — variable selon le dossier</label>
+          <input
+            type="number"
+            inputMode="decimal"
+            value={c.totalHT}
+            onChange={setField("totalHT")}
+            placeholder="Ex. 416.67"
+            className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+        </div>
+      </SectionCard>
+
+      <button
+        onClick={() => canCreate && onCreateCase(c, requerants)}
+        disabled={!canCreate}
+        className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold transition-opacity active:scale-[0.98] disabled:opacity-35"
+        style={{ background: RUST, color: PAPER }}
+      >
+        <FilePlus2 size={17} />
+        Créer le dossier et démarrer le constat
+      </button>
+      <div className="h-6" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Constat de voirie — saisie terrain (observations + photos géolocalisées)
+// ---------------------------------------------------------------------------
+function VoirieTab({ caseInfo, onEditCase, initialData, dossierId, onSaved }) {
+  const [observations, setObservations] = useState(initialData?.observations || []);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingIdx, setEditingIdx] = useState(null);
+  const [draft, setDraft] = useState(emptyObservation);
+  const [processingPhotos, setProcessingPhotos] = useState(false);
+  const obsFileInputRef = useRef(null);
+  const [showStamp, setShowStamp] = useState(false);
+
+  const [videos, setVideos] = useState(initialData?.videos || []);
+  const videoInputRef = useRef(null);
+  const [processingVideo, setProcessingVideo] = useState(false);
+  const [videoProgress, setVideoProgress] = useState("");
+  const [videoError, setVideoError] = useState("");
+
+  const [dictaphoneText, setDictaphoneText] = useState(initialData?.dictaphone?.text || "");
+  const [dictaphoneAudioUrl, setDictaphoneAudioUrl] = useState(initialData?.dictaphone?.audioUrl || null);
+  const [dictaphoneAudioUploading, setDictaphoneAudioUploading] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [dictationSupported] = useState(
+    () => typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition) && navigator.mediaDevices?.getUserMedia
+  );
+  const speechRecognitionRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const mediaChunksRef = useRef([]);
+  const mediaStreamRef = useRef(null);
+
+  const [savingDossier, setSavingDossier] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [totalHT, setTotalHT] = useState(initialData?.cout?.totalHT ?? caseInfo.totalHT ?? "");
+  const [heureFin, setHeureFin] = useState(initialData?.cloture?.heureFin ?? "");
+  const [nombreFeuillets, setNombreFeuillets] = useState(initialData?.cloture?.nombreFeuillets ?? "");
+  const TVA_RATE = 20;
+
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [exportedFile, setExportedFile] = useState(null);
+
+  const totalHTNum = parseFloat((totalHT || "0").toString().replace(",", ".")) || 0;
+  const tvaAmount = totalHTNum * (TVA_RATE / 100);
+  const totalTTC = totalHTNum + tvaAmount;
+
+  function openNewObservation() {
+    setEditingIdx(null);
+    setDraft(emptyObservation);
+    setSheetOpen(true);
+  }
+  function openEditObservation(i) {
+    setEditingIdx(i);
+    setDraft(observations[i]);
+    setSheetOpen(true);
+  }
+  function saveObservation() {
+    if (!draft.description.trim() && draft.photos.length === 0) return;
+    if (editingIdx !== null) {
+      setObservations((prev) => prev.map((o, i) => (i === editingIdx ? draft : o)));
+    } else {
+      setObservations((prev) => [...prev, draft]);
+    }
+    setSheetOpen(false);
+    setShowStamp(true);
+    window.setTimeout(() => setShowStamp(false), 520);
+  }
+  function deleteObservation(i) {
+    setObservations((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function getGpsPosition() {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        resolve(null);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => resolve(null),
+        { timeout: 4000 }
+      );
+    });
+  }
+
+  async function handleObsFiles(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    setProcessingPhotos(true);
+    try {
+      const gps = await getGpsPosition();
+      const urls = await Promise.all(files.map(watermarkImage));
+      const now = new Date();
+      const entries = urls.map((url) => ({ url, timestamp: now.toISOString(), lat: gps?.lat, lon: gps?.lon }));
+      setDraft((prev) => ({ ...prev, photos: [...prev.photos, ...entries] }));
+    } finally {
+      setProcessingPhotos(false);
+    }
+  }
+  function removeObsPhoto(i) {
+    setDraft((prev) => ({ ...prev, photos: prev.photos.filter((_, idx) => idx !== i) }));
+  }
+
+  async function handleVideoFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setProcessingVideo(true);
+    setVideoError("");
+    setVideoProgress("Traitement…");
+    try {
+      let blob = null;
+      let watermarked = false;
+      if (isVideoWatermarkSupported()) {
+        blob = await watermarkVideo(file, (p) => setVideoProgress(`Filigrane… ${Math.round(p * 100)}%`));
+        watermarked = !!blob;
+      }
+      if (!blob) blob = file;
+      setVideoProgress("Calcul de l'empreinte…");
+      const fingerprint = await sha256Hex(blob);
+      setVideoProgress("Envoi…");
+      const { url, error } = await uploadVideo(blob, file.name || "video.mp4");
+      if (error || !url) {
+        setVideoError("Échec de l'envoi de la vidéo : " + (error?.message || "erreur inconnue"));
+        return;
+      }
+      setVideos((prev) => [...prev, { url, watermarked, fingerprint, filename: file.name || "video.mp4" }]);
+    } catch (err) {
+      setVideoError("Échec du traitement (" + (err?.message || "erreur") + ").");
+    } finally {
+      setProcessingVideo(false);
+      setVideoProgress("");
+    }
+  }
+  function removeVideo(i) {
+    setVideos((prev) => prev.filter((_, idx) => idx !== i));
+  }
+
+  function toggleDictaphone() {
+    if (recording) {
+      speechRecognitionRef.current?.stop();
+      mediaRecorderRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      setRecording(false);
+      return;
+    }
+    if (!dictationSupported) return;
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        mediaStreamRef.current = stream;
+        mediaChunksRef.current = [];
+        const recorder = new MediaRecorder(stream);
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) mediaChunksRef.current.push(e.data);
+        };
+        recorder.onstop = async () => {
+          const audioBlob = new Blob(mediaChunksRef.current, { type: "audio/webm" });
+          setDictaphoneAudioUploading(true);
+          const { url } = await uploadAudio(audioBlob, "dictaphone.webm");
+          setDictaphoneAudioUploading(false);
+          if (url) setDictaphoneAudioUrl(url);
+        };
+        mediaRecorderRef.current = recorder;
+        recorder.start();
+
+        const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognitionCtor();
+        recognition.lang = "fr-FR";
+        recognition.continuous = true;
+        recognition.interimResults = false;
+        recognition.onresult = (event) => {
+          let finalText = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) finalText += event.results[i][0].transcript;
+          }
+          if (finalText.trim()) {
+            setDictaphoneText((prev) => (prev ? `${prev.trim()} ${finalText.trim()}` : finalText.trim()));
+          }
+        };
+        recognition.onerror = () => {};
+        recognition.onend = () => {};
+        speechRecognitionRef.current = recognition;
+        recognition.start();
+        setRecording(true);
+      })
+      .catch(() => setVideoError("Accès au microphone refusé."));
+  }
+
+  useEffect(() => {
+    return () => {
+      speechRecognitionRef.current?.stop();
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  async function saveToCloud() {
+    setSavingDossier(true);
+    setSaveMessage("");
+    const { data, error } = await saveDossier({
+      id: dossierId,
+      caseInfo,
+      lots: [],
+      zones: [],
+      categories: [],
+      extra: {
+        observations,
+        videos,
+        cout: { totalHT },
+        cloture: { heureFin, nombreFeuillets },
+        dictaphone: { text: dictaphoneText, audioUrl: dictaphoneAudioUrl },
+      },
+    });
+    setSavingDossier(false);
+    if (error) {
+      setSaveMessage("Échec de l'enregistrement : " + error.message);
+      return;
+    }
+    setSaveMessage("Dossier enregistré (" + new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) + ")");
+    onSaved?.(data?.id);
+  }
+
+  async function exportToWord() {
+    setExporting(true);
+    setExportError("");
+    setExportedFile(null);
+    try {
+      const dateC = caseInfo.dateConstat
+        ? new Date(caseInfo.dateConstat).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+        : "[DATE]";
+
+      async function fetchBytes(url) {
+        try {
+          const res = await fetch(url);
+          return new Uint8Array(await res.arrayBuffer());
+        } catch {
+          return null;
+        }
+      }
+      const [cover1Bytes, cover2Bytes, closingBytes] = await Promise.all([
+        fetchBytes("/affichage-cover-1.jpg"),
+        fetchBytes("/affichage-cover-2.jpg"),
+        fetchBytes("/affichage-closing.jpg"),
+      ]);
+      const FULL_PAGE_W = Math.round(570 * 1.3333);
+      const FULL_PAGE_H = Math.round((570 / 1654) * 2339 * 1.3333);
+      const fullPageImage = (bytes) =>
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 0 },
+          children: bytes ? [new ImageRun({ data: bytes, transformation: { width: FULL_PAGE_W, height: FULL_PAGE_H } })] : [new TextRun("")],
+        });
+      const FULL_PAGE_MARGINS = { top: 200, bottom: 200, left: 200, right: 200 };
+      const A4_SIZE = { width: 11906, height: 16838 };
+
+      const P = (text, opts = {}) =>
+        new Paragraph({
+          alignment: opts.align || AlignmentType.JUSTIFIED,
+          spacing: { after: 160 },
+          children: [new TextRun({ text, bold: !!opts.bold, size: 22 })],
+        });
+      const multilineRuns = (text, opts = {}) =>
+        text.split("\n").map((line, i) =>
+          i === 0
+            ? new TextRun({ text: line, size: opts.size || 22, italics: !!opts.italics, bold: !!opts.bold })
+            : new TextRun({ text: line, size: opts.size || 22, italics: !!opts.italics, bold: !!opts.bold, break: 1 })
+        );
+
+      const reqParagraphs = (caseInfo.requerants || []).flatMap((r, i) => {
+        const text =
+          r.natureRequerant === "morale"
+            ? `${r.denomination || "[DENOMINATION]"}, ${r.formeJuridique || "[FORME]"} au capital de ${r.capital || "[CAPITAL]"} euros, immatriculée au registre du commerce et des sociétés de ${r.rcsVille || "[VILLE]"} sous le numéro ${r.rcsNumero || "[N°]"}, dont le siège social est situé ${r.adresse || "[ADRESSE]"}, représentée par ${r.representantNom || "[REPRESENTANT]"}, ${r.representantQualite || "[QUALITE]"},`
+            : `${r.civilite} ${r.nom}, née ${r.neLe ? "le " + new Date(r.neLe).toLocaleDateString("fr-FR") : "[DATE]"} à ${r.neA || "[LIEU]"}, de nationalité ${r.nationalite}, ${r.profession || "[PROFESSION]"}, demeurant ${r.adresse || "[ADRESSE]"},`;
+        return [P(i === 0 ? "A LA DEMANDE DE :" : "ET DE :", { bold: true }), P(text)];
+      });
+
+      const photoBytesCache = {};
+      for (const obs of observations) {
+        for (const ph of obs.photos) {
+          try {
+            const res = await fetch(ph.url);
+            photoBytesCache[ph.url] = new Uint8Array(await res.arrayBuffer());
+          } catch {
+            photoBytesCache[ph.url] = null;
+          }
+        }
+      }
+
+      const observationChildren = observations.flatMap((obs, oi) => {
+        const items = [];
+        if (obs.description?.trim()) {
+          items.push(P(obs.description.trim()));
+        }
+        let count = 0;
+        for (const ph of obs.photos) {
+          const bytes = photoBytesCache[ph.url];
+          count++;
+          const caption =
+            new Date(ph.timestamp).toLocaleString("fr-FR") +
+            (ph.lat != null && ph.lon != null ? ` — GPS : ${ph.lat.toFixed(6)}, ${ph.lon.toFixed(6)}` : "");
+          if (bytes) {
+            items.push(
+              new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 40 }, children: [new ImageRun({ data: bytes, transformation: { width: 320, height: 240 } })] }),
+              new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 160 }, children: [new TextRun({ text: caption, italics: true, size: 16, color: "8A8371" })] })
+            );
+          }
+          if (count % 2 === 0) items.push(new Paragraph({ children: [new PageBreak()] }));
+        }
+        return items;
+      });
+
+      const videoChildren = [];
+      if (videos.length) {
+        videoChildren.push(new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "VIDEOS", bold: true, size: 26, color: "1F3864" })] }));
+        for (let i = 0; i < videos.length; i++) {
+          const v = videos[i];
+          try {
+            const dataUrl = await qrDataUrl(v.url);
+            const base64 = dataUrl.split(",")[1];
+            const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+            videoChildren.push(
+              new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 60 }, children: [new ImageRun({ data: bytes, transformation: { width: 160, height: 160 } })] }),
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: v.fingerprint ? 60 : 200 },
+                children: [new TextRun({ text: `Vidéo n°${i + 1} — scannez ce QR code pour visionner${v.watermarked ? " (filigranée)" : ""}`, italics: true, size: 18 })],
+              }),
+              ...(v.fingerprint
+                ? [
+                    new Paragraph({
+                      alignment: AlignmentType.CENTER,
+                      spacing: { after: 200 },
+                      children: [
+                        new TextRun({
+                          text: `Cette vidéo est dotée d'une empreinte numérique (${v.fingerprint}) garantissant son authenticité et son intégrité.`,
+                          italics: true,
+                          size: 14,
+                          color: "8A8371",
+                        }),
+                      ],
+                    }),
+                  ]
+                : [])
+            );
+          } catch {
+            videoChildren.push(P(`Vidéo n°${i + 1} : ${v.url}`));
+          }
+        }
+      }
+
+      const dictaphoneChildren = dictaphoneText?.trim()
+        ? [
+            new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "RETRANSCRIPTION DICTAPHONE", bold: true, size: 26, color: "1F3864" })] }),
+            P(dictaphoneText.trim()),
+            ...(dictaphoneAudioUrl
+              ? [new Paragraph({ spacing: { before: 80 }, children: [new TextRun({ text: `Enregistrement audio : ${dictaphoneAudioUrl}`, italics: true, size: 16, color: "8A8371" })] })]
+              : []),
+          ]
+        : [];
+
+      const doc = new Document({
+        sections: [
+          { properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } }, children: [fullPageImage(cover1Bytes)] },
+          { properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } }, children: [fullPageImage(cover2Bytes)] },
+          {
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { after: 40 },
+                children: [new TextRun({ text: "PROCES-VERBAL DE CONSTAT DE COMMISSAIRE DE JUSTICE", bold: true, size: 28 })],
+              }),
+              P(`L'an deux-mille-vingt-six et le ${dateC}, à ${caseInfo.heureDebut || "[HEURE]"},`),
+              ...reqParagraphs,
+              P("EXPOSE DE LA REQUERANTE :", { bold: true }),
+              P(caseInfo.expose?.trim() || "[EXPOSE A COMPLETER]"),
+              P("Qu'afin d'éviter toutes contestations ultérieures, elle me requiert afin que je procède, à titre conservatoire, à toutes constatations utiles sur la zone concernée et à proximité."),
+              P("Déférant à cette réquisition,"),
+              P(
+                `Je, ${caseInfo.intervenantNom || "[NOM]"}, ${caseInfo.intervenantQualite || "[QUALITE]"}, membre de la SCP BRELIVET Tanguy, titulaire d'un office de Commissaire de Justice à la résidence de Concarneau (29900), 20 avenue de la gare, ressort de la Cour d'Appel de Rennes, soussigné(e),`
+              ),
+              P(`Me suis rendu(e) ce jour au ${caseInfo.address},`),
+              P("Et là étant,"),
+              P("J'AI PROCEDE AUX CONSTATATIONS SUIVANTES :", { bold: true }),
+              ...observationChildren,
+              ...videoChildren,
+              ...dictaphoneChildren,
+              new Paragraph({
+                spacing: { before: 240 },
+                children: [
+                  new TextRun(
+                    `Telles sont les constatations faites ce jour au ${caseInfo.address}, de tout quoi j'ai dressé et rédigé le présent procès-verbal de constat, avec photographies, pour servir et valoir ce que de droit.`
+                  ),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 160 },
+                children: [
+                  new TextRun(
+                    `Ayant satisfait à la mission pour laquelle j'avais été requis(e), j'ai suspendu mes opérations à ${heureFin || "[HEURE DE FIN]"} et je me suis retiré(e) afin de dresser le présent procès-verbal.`
+                  ),
+                ],
+              }),
+              new Paragraph({ spacing: { before: 160 }, children: [new TextRun(`Le présent acte comprend ${nombreFeuillets || "[NOMBRE]"} feuillets.`)] }),
+              new Paragraph({ spacing: { before: 160 }, children: [new TextRun("Les photographies sont intégrées dans le corps du présent acte.")] }),
+              new Paragraph({ spacing: { before: 240, after: 120 }, children: [new TextRun({ text: "Coût de l'acte (arrêté du 28 février 2024) :", bold: true })] }),
+              new Table({
+                width: { size: 60, type: WidthType.PERCENTAGE },
+                rows: [
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("Total HT")] }),
+                      new TableCell({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun(totalHT ? eurosCost(totalHTNum) : "[A CALCULER]")] })] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph("TVA 20%")] }),
+                      new TableCell({ children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun(totalHT ? eurosCost(tvaAmount) : "[A CALCULER]")] })] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ shading: { type: ShadingType.CLEAR, fill: "1F3864" }, children: [new Paragraph({ children: [new TextRun({ text: "Total TTC", bold: true, color: "FFFFFF" })] })] }),
+                      new TableCell({ shading: { type: ShadingType.CLEAR, fill: "1F3864" }, children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: totalHT ? eurosCost(totalTTC) : "[A CALCULER]", bold: true, color: "FFFFFF" })] })] }),
+                    ],
+                  }),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 120 },
+                children: [
+                  new TextRun({
+                    text: totalHT ? `Soit la somme de ${montantEnLettres(totalTTC)} (${eurosCost(totalTTC)})` : "[MONTANT EN TOUTES LETTRES A CALCULER]",
+                    italics: true,
+                  }),
+                ],
+              }),
+              new Paragraph({
+                spacing: { before: 240 },
+                children: [
+                  new TextRun({
+                    text: "Export automatique depuis l'application de saisie terrain — document de travail à relire avant remise officielle.",
+                    size: 16,
+                    color: "8A8371",
+                  }),
+                ],
+              }),
+            ],
+          },
+          { properties: { page: { size: A4_SIZE, margin: FULL_PAGE_MARGINS } }, children: [fullPageImage(closingBytes)] },
+        ],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      const safeName = (caseInfo.name || "constat_voirie").replace(/[^a-z0-9]+/gi, "_");
+      const filename = `Constat_voirie_${safeName}.docx`;
+      const file = new File([blob], filename, { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+
+      const url = URL.createObjectURL(blob);
+      setExportedFile({ url, filename });
+
+      let shared = false;
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file], title: filename, text: "Constat de voirie (brouillon)" });
+          shared = true;
+        } catch (shareErr) {
+          if (shareErr?.name === "AbortError") shared = true;
+        }
+      }
+      if (!shared) {
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename;
+          a.rel = "noopener";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch {
+          // le lien manuel ci-dessous couvre ce cas
+        }
+      }
+    } catch (err) {
+      setExportError("Échec de la génération (" + (err?.message || "erreur inconnue") + "). Réessayez.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <>
+      <StampBurst show={showStamp} />
+
+      <div className="shrink-0 px-5 pb-4 pt-5" style={{ background: NAVY, color: PAPER }}>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em]" style={{ color: "#9FB0C9" }}>Constat de voirie</p>
+            <h1 className="mt-0.5 truncate text-[18px] font-semibold leading-tight">{caseInfo.name}</h1>
+          </div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full" style={{ background: RUST }}>
+            <TrafficCone size={18} color={PAPER} strokeWidth={2} />
+          </div>
+        </div>
+        <button onClick={onEditCase} className="mt-3 flex items-center gap-1.5 rounded-full py-1 text-[11.5px]" style={{ color: "#C3CEDE" }}>
+          <MapPin size={12} />
+          <span className="truncate">{caseInfo.address}</span>
+          <Pencil size={11} className="shrink-0 opacity-70" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 pt-3">
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Observations</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{observations.length}</span>
+        </div>
+        {observations.length === 0 ? (
+          <div className="rounded-2xl border border-dashed px-4 py-6 text-center" style={{ borderColor: LINE }}>
+            <p className="text-[13px]" style={{ color: MUTED }}>Aucune observation pour l'instant.</p>
+          </div>
+        ) : (
+          observations.map((o, i) => (
+            <button
+              key={i}
+              onClick={() => openEditObservation(i)}
+              className="mb-2 flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left"
+              style={{ borderColor: LINE, background: "white" }}
+            >
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full font-mono text-[12px] font-bold" style={{ background: PAPER_DEEP, color: NAVY }}>
+                {i + 1}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[12.5px] font-medium" style={{ color: INK }}>{o.description || "(sans description)"}</p>
+                <p className="truncate text-[11px]" style={{ color: MUTED }}>{o.photos.length} photo{o.photos.length > 1 ? "s" : ""}</p>
+              </div>
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); deleteObservation(i); }}
+                className="shrink-0 rounded-full p-1.5"
+                style={{ color: "#B5301B" }}
+              >
+                <Trash2 size={14} />
+              </span>
+            </button>
+          ))
+        )}
+
+        <div className="mt-5 mb-2 flex items-baseline justify-between">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Vidéos du site</h2>
+          <span className="font-mono text-[10.5px]" style={{ color: MUTED }}>{videos.length}</span>
+        </div>
+        <div className="mb-2 flex flex-wrap gap-2">
+          {videos.map((v, i) => (
+            <div key={v.url || i} className="relative flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border" style={{ borderColor: LINE, background: PAPER_DEEP }}>
+              <Video size={18} style={{ color: NAVY }} />
+              <span className="text-[8px] font-medium" style={{ color: MUTED }}>{v.watermarked ? "OK" : "brute"}</span>
+              <button onClick={() => removeVideo(i)} aria-label="Retirer la vidéo" className="absolute -right-1 -top-1 flex h-4.5 w-4.5 items-center justify-center rounded-full" style={{ background: "rgba(20,18,16,0.65)" }}>
+                <X size={10} color="white" />
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => videoInputRef.current?.click()}
+            disabled={processingVideo}
+            className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed disabled:opacity-50"
+            style={{ borderColor: LINE, color: MUTED }}
+          >
+            <Video size={17} />
+            <span className="text-[8px] font-medium text-center leading-tight">{processingVideo ? videoProgress : "Ajouter"}</span>
+          </button>
+          <input ref={videoInputRef} type="file" accept="video/*" capture="environment" onChange={handleVideoFile} className="hidden" />
+        </div>
+        {videoError && <p className="mb-2 rounded-xl px-3 py-2 text-[11px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{videoError}</p>}
+        {!isVideoWatermarkSupported() && (
+          <p className="mb-4 text-[10.5px]" style={{ color: MUTED }}>Filigrane vidéo non supporté par ce navigateur — les vidéos seront ajoutées sans filigrane.</p>
+        )}
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Dictaphone</h2>
+        </div>
+        <div className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          {dictationSupported ? (
+            <button
+              type="button"
+              onClick={toggleDictaphone}
+              className="mb-2 flex w-full items-center justify-center gap-2 rounded-xl py-3 text-[13px] font-semibold"
+              style={{ background: recording ? "#B5301B" : NAVY, color: "white" }}
+            >
+              {recording ? <Square size={15} /> : <Mic size={15} />}
+              {recording ? "Arrêter l'enregistrement" : "Démarrer le dictaphone"}
+            </button>
+          ) : (
+            <p className="text-[11.5px]" style={{ color: MUTED }}>Dictaphone non disponible sur ce navigateur.</p>
+          )}
+          <textarea
+            value={dictaphoneText}
+            onChange={(e) => setDictaphoneText(e.target.value)}
+            rows={3}
+            placeholder="La retranscription apparaît ici pendant l'enregistrement — modifiable ensuite."
+            className="w-full resize-none rounded-xl border px-3.5 py-2.5 text-[13px] outline-none"
+            style={{ borderColor: LINE, background: "white", color: INK }}
+          />
+          {dictaphoneAudioUploading && <p className="mt-1.5 text-[10.5px]" style={{ color: MUTED }}>Enregistrement audio en cours d'envoi…</p>}
+        </div>
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Clôture</h2>
+        </div>
+        <div className="mb-4 grid grid-cols-2 gap-x-3 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Heure de fin</label>
+            <input type="time" value={heureFin} onChange={(e) => setHeureFin(e.target.value)} className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none" style={{ borderColor: LINE, background: "white", color: INK }} />
+          </div>
+          <div>
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Nombre de feuillets</label>
+            <input type="number" inputMode="numeric" value={nombreFeuillets} onChange={(e) => setNombreFeuillets(e.target.value)} placeholder="Ex. 4" className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none" style={{ borderColor: LINE, background: "white", color: INK }} />
+          </div>
+        </div>
+
+        <div className="mt-5 mb-2">
+          <h2 className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]" style={{ color: MUTED }}>Coût de l'acte</h2>
+        </div>
+        <div className="mb-4 rounded-xl border p-3" style={{ borderColor: LINE, background: "white" }}>
+          <div className="mb-3">
+            <label className="mb-1.5 block font-mono text-[10px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Total HT (€) — variable</label>
+            <input type="number" inputMode="decimal" value={totalHT} onChange={(e) => setTotalHT(e.target.value)} placeholder="Ex. 416.67" className="w-full rounded-xl border px-3.5 py-2.5 text-[14px] outline-none" style={{ borderColor: LINE, background: "white", color: INK }} />
+          </div>
+          <div className="flex items-center justify-between border-t py-1.5" style={{ borderColor: LINE }}>
+            <span className="text-[12px]" style={{ color: MUTED }}>TVA (20%)</span>
+            <span className="font-mono text-[13px]" style={{ color: INK }}>{eurosCost(tvaAmount)}</span>
+          </div>
+          <div className="flex items-center justify-between border-t pt-2.5" style={{ borderColor: LINE }}>
+            <span className="text-[12.5px] font-semibold" style={{ color: INK }}>Total TTC</span>
+            <span className="font-mono text-[15px] font-bold" style={{ color: NAVY }}>{eurosCost(totalTTC)}</span>
+          </div>
+          {!!totalHT && (
+            <p className="mt-2 text-[11px] italic" style={{ color: MUTED }}>Soit la somme de {montantEnLettres(totalTTC)} ({eurosCost(totalTTC)})</p>
+          )}
+        </div>
+        <div className="h-4" />
+      </div>
+
+      <div className="shrink-0 border-t px-5 pb-4 pt-3" style={{ borderColor: LINE, background: PAPER }}>
+        <button onClick={openNewObservation} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold shadow-sm active:scale-[0.98] transition-transform" style={{ background: RUST, color: PAPER }}>
+          <Plus size={18} strokeWidth={2.5} />
+          Ajouter une observation
+        </button>
+        {supabaseConfigured && (
+          <button
+            onClick={saveToCloud}
+            disabled={savingDossier}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold disabled:opacity-35"
+            style={{ borderColor: "#2D6A4F", color: "#2D6A4F" }}
+          >
+            <Cloud size={16} />
+            {savingDossier ? "Enregistrement…" : dossierId ? "Mettre à jour le dossier" : "Enregistrer le dossier"}
+          </button>
+        )}
+        {saveMessage && <p className="mt-1.5 text-center text-[11px]" style={{ color: "#2D6A4F" }}>{saveMessage}</p>}
+        <button
+          onClick={exportToWord}
+          disabled={observations.length === 0 || exporting}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border py-3 text-[13.5px] font-semibold disabled:opacity-35"
+          style={{ borderColor: NAVY, color: NAVY }}
+        >
+          <FileDown size={16} />
+          {exporting ? "Préparation du document…" : "Exporter vers le modèle Word"}
+        </button>
+        {exportError && <p className="mt-2 rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "rgba(181,48,27,0.08)", color: "#B5301B" }}>{exportError}</p>}
+        {exportedFile && (
+          <div className="mt-2 rounded-xl px-3 py-2.5" style={{ background: "rgba(45,106,79,0.08)" }}>
+            <p className="mb-1.5 text-[11.5px]" style={{ color: "#2D6A4F" }}>Document prêt :</p>
+            <a href={exportedFile.url} download={exportedFile.filename} className="flex items-center justify-center gap-1.5 rounded-lg py-2 text-[12.5px] font-semibold" style={{ background: "#2D6A4F", color: "white" }}>
+              <FileDown size={14} />
+              Ouvrir / enregistrer {exportedFile.filename}
+            </a>
+          </div>
+        )}
+      </div>
+
+      <Sheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        eyebrow={editingIdx !== null ? "Modifier l'observation" : "Nouvelle observation"}
+        title={`Observation n°${editingIdx !== null ? editingIdx + 1 : observations.length + 1}`}
+        footer={
+          <button onClick={saveObservation} className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold active:scale-[0.98]" style={{ background: RUST, color: PAPER }}>
+            <TrafficCone size={17} />
+            {editingIdx !== null ? "Enregistrer les modifications" : "Constater cette observation"}
+          </button>
+        }
+      >
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Description</label>
+        <textarea
+          value={draft.description}
+          onChange={(e) => setDraft((p) => ({ ...p, description: e.target.value }))}
+          rows={4}
+          placeholder="Ex. J'observe, sur la chaussée en enrobé bitumineux, des anomalies localisées..."
+          className="mb-4 w-full resize-none rounded-xl border px-3.5 py-3 text-[14px] outline-none"
+          style={{ borderColor: LINE, background: "white", color: INK }}
+        />
+        <label className="mb-1.5 block font-mono text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: MUTED }}>Photos (géolocalisées automatiquement si autorisé)</label>
+        <div className="flex flex-wrap gap-2">
+          {draft.photos.map((ph, i) => (
+            <PhotoThumb key={ph.url + i} src={ph.url} onRemove={() => removeObsPhoto(i)} />
+          ))}
+          <button
+            type="button"
+            onClick={() => obsFileInputRef.current?.click()}
+            disabled={processingPhotos}
+            className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed disabled:opacity-50"
+            style={{ borderColor: LINE, color: MUTED }}
+          >
+            <Camera size={17} />
+            <span className="text-[9px] font-medium text-center leading-tight">{processingPhotos ? "…" : "Ajouter"}</span>
+          </button>
+          <input ref={obsFileInputRef} type="file" accept="image/*" capture="environment" multiple onChange={handleObsFiles} className="hidden" />
+        </div>
+      </Sheet>
+    </>
+  );
+}
+
+
+export default function InventoryFieldApp() {
+  const [screen, setScreen] = useState("menu"); // "menu" | "app"
+  const [tab, setTab] = useState("nouveau");
+  const [requerants, setRequerants] = useState(SEED_REQUERANTS);
+  const [caseInfo, setCaseInfo] = useState({
+    name: "SARL IZOA — La Caserne",
+    address: "108 Av. de la Gare, Concarneau",
+    heureDebut: "14:02",
+    formeJuridique: "SARL",
+    denomination: "IZOA",
+    capital: "1 000",
+    rcsVille: "Quimper",
+    rcsNumero: "979 626 306",
+    adresseSiege: "108 Avenue de la Gare, 29900 Concarneau",
+    representant: "Emmelyne GOBIN",
+    qualiteRepresentant: "Gérante",
+    tribunal: "Quimper",
+    dateJugement: "",
+    dateInventaire: "",
+    requerant: SEED_REQUERANTS[0],
+  });
+  const [caseEditOpen, setCaseEditOpen] = useState(false);
+  const [draftName, setDraftName] = useState(caseInfo.name);
+  const [draftAddress, setDraftAddress] = useState(caseInfo.address);
+  const [inventoryKey, setInventoryKey] = useState(0);
+  const [dossierId, setDossierId] = useState(null);
+  const [loadedInitialData, setLoadedInitialData] = useState(null);
+  const [embedded, setEmbedded] = useState(false);
+  const [constatType, setConstatType] = useState("inventaire_lj");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") === "dashboard") {
+      setEmbedded(true);
+      setScreen("dashboard");
+    }
+  }, []);
+
+  async function handleOpenDossier(id) {
+    const { data, error } = await loadDossier(id);
+    if (error || !data) return;
+    const payload = data.payload || {};
+    const type = payload.caseInfo?.type || data.type || "inventaire_lj";
+    setCaseInfo(payload.caseInfo || {});
+    setConstatType(type);
+    if (type === "affichage") {
+      setLoadedInitialData({
+        panneaux: payload.panneaux || [],
+        photos: payload.photos || [],
+        videos: payload.videos || [],
+        cout: payload.cout || {},
+        cloture: payload.cloture || {},
+        dictaphone: payload.dictaphone || {},
+      });
+    } else if (type === "voirie") {
+      setLoadedInitialData({
+        observations: payload.observations || [],
+        videos: payload.videos || [],
+        cout: payload.cout || {},
+        cloture: payload.cloture || {},
+        dictaphone: payload.dictaphone || {},
+      });
+    } else {
+      setLoadedInitialData({ lots: payload.lots || [], zones: payload.zones, categories: payload.categories });
+    }
+    setDossierId(id);
+    setInventoryKey((k) => k + 1);
+    setScreen("app");
+    setTab("inventaire");
+  }
+
+  function handleCreateCase(c, requerant) {
+    setCaseInfo({
+      name: `${c.formeJuridique} ${c.denomination}`.trim(),
+      address: c.adresseLieu || c.adresseSiege,
+      heureDebut: c.heureDebut,
+      formeJuridique: c.formeJuridique,
+      denomination: c.denomination,
+      capital: c.capital,
+      rcsVille: c.rcsVille,
+      rcsNumero: c.rcsNumero,
+      adresseSiege: c.adresseSiege,
+      representant: c.representant,
+      qualiteRepresentant: c.qualiteRepresentant,
+      tribunal: c.tribunal,
+      dateJugement: c.dateJugement,
+      dateInventaire: c.dateInventaire,
+      requerant,
+      type: constatType,
+    });
+    setDossierId(null);
+    setLoadedInitialData(null);
+    setInventoryKey((k) => k + 1); // remounts InventoryTab with a clean slate
+    setTab("inventaire");
+  }
+
+  function handleCreateAffichageCase(c, requerantsList) {
+    const r0 = requerantsList[0];
+    const displayName =
+      r0?.natureRequerant === "morale"
+        ? `${r0.formeJuridique || ""} ${r0.denomination || ""}`.trim()
+        : `${r0?.civilite || ""} ${r0?.nom || ""}`.trim();
+    setCaseInfo({
+      name: displayName || "Constat d'affichage",
+      address: c.adresseConstat,
+      heureDebut: c.heureConstat,
+      contexte: c.contexte,
+      commune: c.commune,
+      dateConstat: c.dateConstat,
+      passage: c.passage,
+      requerants: requerantsList,
+      type: "affichage",
+      totalHT: c.totalHT,
+    });
+    setDossierId(null);
+    setLoadedInitialData(null);
+    setInventoryKey((k) => k + 1);
+    setTab("inventaire");
+  }
+
+  function handleCreateVoirieCase(c, requerantsList) {
+    const r0 = requerantsList[0];
+    const displayName =
+      r0?.natureRequerant === "morale"
+        ? `${r0.formeJuridique || ""} ${r0.denomination || ""}`.trim()
+        : `${r0?.civilite || ""} ${r0?.nom || ""}`.trim();
+    setCaseInfo({
+      name: displayName || "Constat de voirie",
+      address: c.adresseConstat,
+      heureDebut: c.heureConstat,
+      expose: c.expose,
+      dateConstat: c.dateConstat,
+      intervenantNom: c.intervenantNom,
+      intervenantQualite: c.intervenantQualite,
+      requerants: requerantsList,
+      type: "voirie",
+      totalHT: c.totalHT,
+    });
+    setDossierId(null);
+    setLoadedInitialData(null);
+    setInventoryKey((k) => k + 1);
+    setTab("inventaire");
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center" style={{ background: PAPER }}>
+      <style>{`
+        @keyframes stampIn {
+          0% { opacity: 0; transform: scale(1.8) rotate(-12deg); }
+          55% { opacity: 1; transform: scale(0.94) rotate(-12deg); }
+          75% { transform: scale(1.04) rotate(-12deg); }
+          100% { opacity: 0; transform: scale(1) rotate(-12deg); }
+        }
+        .scrollbar-none::-webkit-scrollbar { display: none; }
+        .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
+      `}</style>
+
+      <div className="relative flex h-[100dvh] w-full max-w-[520px] flex-col overflow-hidden" style={{ background: PAPER }}>
+        {screen === "dashboard" ? (
+          <Dashboard onOpenDossier={handleOpenDossier} onBack={() => setScreen("menu")} embedded={embedded} />
+        ) : screen === "menu" ? (
+          <MenuScreen onSelect={(key) => { setConstatType(key); setScreen("app"); setTab("nouveau"); }} onOpenDashboard={() => setScreen("dashboard")} />
+        ) : (
+        <>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {tab === "inventaire" ? (
+            constatType === "affichage" ? (
+              <AffichageTab
+                key={inventoryKey}
+                caseInfo={caseInfo}
+                onEditCase={() => { setDraftName(caseInfo.name); setDraftAddress(caseInfo.address); setCaseEditOpen(true); }}
+                initialData={loadedInitialData}
+                dossierId={dossierId}
+                onSaved={(id) => setDossierId(id)}
+              />
+            ) : constatType === "voirie" ? (
+              <VoirieTab
+                key={inventoryKey}
+                caseInfo={caseInfo}
+                onEditCase={() => { setDraftName(caseInfo.name); setDraftAddress(caseInfo.address); setCaseEditOpen(true); }}
+                initialData={loadedInitialData}
+                dossierId={dossierId}
+                onSaved={(id) => setDossierId(id)}
+              />
+            ) : (
+              <InventoryTab
+                key={inventoryKey}
+                caseInfo={caseInfo}
+                onEditCase={() => { setDraftName(caseInfo.name); setDraftAddress(caseInfo.address); setCaseEditOpen(true); }}
+                initialData={loadedInitialData}
+                dossierId={dossierId}
+                onSaved={(id) => setDossierId(id)}
+              />
+            )
+          ) : (
+            <>
+              <div className="shrink-0 px-5 pb-4 pt-5" style={{ background: NAVY, color: PAPER }}>
+                <button
+                  onClick={() => setScreen("menu")}
+                  className="mb-2 flex items-center gap-1 text-[11px] font-semibold"
+                  style={{ color: "#C3CEDE" }}
+                >
+                  <ArrowLeft size={13} />
+                  Changer de type de constat
+                </button>
+                <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.14em]" style={{ color: "#9FB0C9" }}>Nouveau dossier</p>
+                <h1 className="mt-0.5 text-[18px] font-semibold leading-tight">
+                  {constatType === "affichage" ? "Ouvrir un constat d'affichage" : constatType === "voirie" ? "Ouvrir un constat de voirie" : "Ouvrir un inventaire"}
+                </h1>
+                <p className="mt-1 text-[11.5px]" style={{ color: "#C3CEDE" }}>
+                  {constatType === "affichage" ? "Requérant(s), adresse et contexte du constat" : constatType === "voirie" ? "Requérant(s), adresse, exposé et intervenant" : "Requérant, défendeur, jugement et lieu"}
+                </p>
+              </div>
+              {constatType === "affichage" ? (
+                <NewAffichageCaseTab onCreateCase={handleCreateAffichageCase} />
+              ) : constatType === "voirie" ? (
+                <NewVoirieCaseTab onCreateCase={handleCreateVoirieCase} />
+              ) : (
+                <NewCaseTab
+                  requerants={requerants}
+                  onAddRequerant={(r) => setRequerants((prev) => [...prev, r])}
+                  onCreateCase={handleCreateCase}
+                />
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Bottom tab bar */}
+        <div className="grid shrink-0 grid-cols-2 border-t" style={{ borderColor: LINE, background: PAPER }}>
+          <button
+            onClick={() => setTab("inventaire")}
+            className="flex flex-col items-center gap-1 py-2.5"
+            style={{ color: tab === "inventaire" ? NAVY : MUTED }}
+          >
+            <Stamp size={19} strokeWidth={tab === "inventaire" ? 2.4 : 1.8} />
+            <span className="text-[10.5px] font-semibold">En cours</span>
+          </button>
+          <button
+            onClick={() => setTab("nouveau")}
+            className="flex flex-col items-center gap-1 py-2.5"
+            style={{ color: tab === "nouveau" ? NAVY : MUTED }}
+          >
+            <FilePlus2 size={19} strokeWidth={tab === "nouveau" ? 2.4 : 1.8} />
+            <span className="text-[10.5px] font-semibold">Nouveau dossier</span>
+          </button>
+        </div>
+
+        <Sheet
+          open={caseEditOpen}
+          onClose={() => setCaseEditOpen(false)}
+          eyebrow="Dossier"
+          title="Modifier le dossier"
+          z={40}
+          footer={
+            <button
+              onClick={() => {
+                setCaseInfo((p) => ({ ...p, name: draftName.trim() || p.name, address: draftAddress.trim() || p.address }));
+                setCaseEditOpen(false);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[14.5px] font-semibold active:scale-[0.98] transition-transform"
+              style={{ background: NAVY, color: PAPER }}
+            >
+              <Check size={17} />
+              Enregistrer
+            </button>
+          }
+        >
+          <Field label="Nom du dossier" value={draftName} onChange={(e) => setDraftName(e.target.value)} placeholder="Ex. SARL IZOA — La Caserne" />
+          <Field label="Adresse de l'inventaire" value={draftAddress} onChange={(e) => setDraftAddress(e.target.value)} placeholder="Ex. 108 Avenue de la Gare, 29900 Concarneau" />
+        </Sheet>
+        </>
+        )}
+      </div>
+    </div>
+  );
+}
